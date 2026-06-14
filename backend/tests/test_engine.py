@@ -86,11 +86,14 @@ def test_old_regime_deductions_pf_nps_80c_capped():
     assert round(ded.amount) == 235000
 
 
-def test_regime_comparison_recommends_lower():
+def test_compute_taxes_uses_chosen_regime():
     ti = TaxInput(salaries=[SalaryComponent(gross_salary=1275000)])
-    comp = compute_taxes(ti)
-    assert comp.recommended_regime == "new"
-    assert comp.recommended_savings == 187200.0
+    comp = compute_taxes(ti, "new")
+    assert comp.regime == "new"
+    assert comp.result.total_tax_liability == 0.0
+    comp_old = compute_taxes(ti, "old")
+    assert comp_old.regime == "old"
+    assert comp_old.result.total_tax_liability == 187200.0
 
 
 def test_independent_recompute_agrees():
@@ -99,7 +102,7 @@ def test_independent_recompute_agrees():
                                   professional_tax=2400)],
         deductions=Deductions(amount_80c=150000, amount_80ccd1b=50000),
         capital_gains=CapitalGains(ltcg_112a=280000), savings_interest=12000)
-    comp = compute_taxes(ti)
+    comp = compute_taxes(ti, "old")
     ok, _ = verify(ti, comp)
     assert ok is True
 
@@ -223,6 +226,6 @@ def test_recompute_agrees_with_all_heads():
             amount_80e=40000, amount_80ddb=30000, home_loan_interest=120000,
             home_loan_self_occupied=False, donation_50_limit=50000),
         savings_interest=12000, fd_interest=30000)
-    comp = compute_taxes(ti)
+    comp = compute_taxes(ti, "old")
     ok, note = verify(ti, comp)
     assert ok is True, note

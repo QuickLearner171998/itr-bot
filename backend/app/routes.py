@@ -234,7 +234,7 @@ async def guidance(session_id: str) -> dict:
     from ..schemas.compute import TaxComputation
     computation = TaxComputation(**state["computation"])
     form = ITRForm(state.get("decision", {}).get("form", ITRForm.ITR2.value))
-    result = computation.new if computation.recommended_regime == "new" else computation.old
+    result = computation.result
 
     sections = build_guided_filing(ti, result, form)
     intro = await guidance_intro(form, result.regime, result.refund_or_payable)

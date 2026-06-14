@@ -36,11 +36,12 @@ async def run_computation(
     Returns:
         Dict with the ``TaxComputation``, verification result, and final issues.
     """
+    regime = ti.filing_regime
     await bus.emit(session_id, EventType.AGENT_STEP,
-                   "Running deterministic tax engine (old vs new regime)...")
-    computation: TaxComputation = compute_taxes(ti)
+                   f"Running deterministic tax engine ({regime.upper()} regime, from Form 16)...")
+    computation: TaxComputation = compute_taxes(ti, regime)
 
-    chosen = computation.new if computation.recommended_regime == "new" else computation.old
+    chosen = computation.result
     for step in chosen.steps:
         await bus.emit(session_id, EventType.COMPUTE_STEP, step.label,
                        key=step.key, label=step.label, amount=step.amount,
@@ -60,14 +61,15 @@ async def run_computation(
                        severity=issue.severity, fields=issue.fields, stage="final")
 
     blocking = [i for i in final_issues if i.severity == "error"] or not verified
+    payable = chosen.refund_or_payable
+    verb = "payable" if payable >= 0 else "refund"
     await bus.emit(session_id, EventType.COMPUTE_DONE,
-                   f"Recommended: {computation.recommended_regime.upper()} regime "
-                   f"(saves {computation.recommended_savings:,.0f})",
+                   f"{regime.upper()} regime: tax {chosen.total_tax_liability:,.0f} "
+                   f"({verb} {abs(payable):,.0f})",
                    computation=computation.model_dump(),
                    blocking=bool(blocking))
     logger.info("computation done", extra={
-        "recommended": computation.recommended_regime,
-        "verified": verified, "blocking": bool(blocking)})
+        "regime": regime, "verified": verified, "blocking": bool(blocking)})
     return {
         "computation": computation.model_dump(),
         "verified": verified,

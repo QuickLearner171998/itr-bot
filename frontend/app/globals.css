@@ -169,6 +169,17 @@ input.field:focus, select.field:focus { border-color: var(--accent); }
 .dropzone.has { border-style: solid; border-color: rgba(56,211,159,0.4); }
 .dropzone .hint { font-size: 12px; color: var(--text-faint); margin-top: 6px; }
 
+.extract-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 22px; }
+@media (max-width: 760px) { .extract-summary { grid-template-columns: 1fr; } }
+.extract-summary-card { border: 1px solid var(--panel-border); border-radius: var(--radius-sm); padding: 14px; background: rgba(255,255,255,0.02); }
+.ess-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.ess-title { font-weight: 600; font-size: 13px; }
+.ess-empty { font-size: 12px; color: var(--text-faint); }
+.ess-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; border-bottom: 1px dashed var(--panel-border); font-size: 13px; }
+.ess-row:last-child { border-bottom: none; }
+.ess-label { color: var(--text-dim); }
+.ess-val { display: inline-flex; align-items: center; gap: 8px; font-weight: 500; }
+
 .extract-card { border: 1px solid var(--panel-border); border-radius: var(--radius-sm); padding: 16px; }
 .extract-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .extract-head .name { font-weight: 600; font-size: 14px; }

@@ -72,9 +72,6 @@ class UserProfile(BaseModel):
     has_brought_forward_losses: bool = False
     agricultural_income_above_5k: bool = False
 
-    # Regime preference (None => auto-compare and recommend lower).
-    preferred_regime: str | None = None
-
     # Questions the user answered "not sure" on; resolved from documents later.
     unsure_fields: list[str] = Field(default_factory=list)
 

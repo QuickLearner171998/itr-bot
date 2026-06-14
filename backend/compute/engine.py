@@ -467,28 +467,14 @@ def _surcharge_with_relief(
     return surcharge - marginal_relief if marginal_relief else surcharge, marginal_relief
 
 
-def compute_taxes(ti: TaxInput) -> TaxComputation:
-    """Compute both regimes, recommend the cheaper, and verify via re-compute.
+def compute_taxes(ti: TaxInput, regime: str) -> TaxComputation:
+    """Compute the tax for the regime the user is filing under.
 
     Args:
         ti: Consolidated tax input.
+        regime: The chosen filing regime, "old" or "new".
 
     Returns:
-        A ``TaxComputation`` comparing old and new regimes.
+        A ``TaxComputation`` holding the traced result for that regime.
     """
-    old = compute_regime(ti, "old")
-    new = compute_regime(ti, "new")
-
-    if new.total_tax_liability <= old.total_tax_liability:
-        recommended = "new"
-        savings = old.total_tax_liability - new.total_tax_liability
-    else:
-        recommended = "old"
-        savings = new.total_tax_liability - old.total_tax_liability
-
-    return TaxComputation(
-        old=old,
-        new=new,
-        recommended_regime=recommended,
-        recommended_savings=round(savings, 2),
-    )
+    return TaxComputation(result=compute_regime(ti, regime), regime=regime)

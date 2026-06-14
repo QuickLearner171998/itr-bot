@@ -5,7 +5,7 @@ export const STEPS = [
   "Questionnaire",
   "Documents",
   "Upload",
-  "Reconcile",
+  "Review",
   "Compute",
   "File",
 ];

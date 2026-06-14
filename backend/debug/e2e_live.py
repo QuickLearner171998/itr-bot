@@ -78,8 +78,7 @@ def main() -> None:
 
     comp = requests.post(f"{API}/api/session/{sid}/compute").json()
     c = comp["computation"]
-    print("recommended:", c["recommended_regime"], "savings:", c["recommended_savings"])
-    print("new tax:", c["new"]["total_tax_liability"], "old tax:", c["old"]["total_tax_liability"])
+    print("regime:", c["regime"], "tax:", c["result"]["total_tax_liability"])
     print("verified:", comp["verified"], "-", comp["verification_note"])
 
     guide = requests.get(f"{API}/api/session/{sid}/guidance").json()

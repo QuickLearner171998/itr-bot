@@ -48,6 +48,12 @@ def consolidate(docs: list[DocumentExtraction], age: int = 30) -> TaxInput:
 
     ti = TaxInput(age=age)
 
+    # Filing regime: taken from Form 16 (employer's TDS regime). If any Form 16
+    # states "old", use old; otherwise the statutory default (new).
+    regimes = [str(v.get("regime") or "").strip().lower()
+               for v in by_type.get(DocType.FORM16, [])]
+    ti.filing_regime = "old" if any(r.startswith("o") for r in regimes) else "new"
+
     # Salary: one component per Form 16.
     f16_80c = f16_80ccd1b = f16_80ccd2 = f16_80d = 0.0
     for v in by_type.get(DocType.FORM16, []):

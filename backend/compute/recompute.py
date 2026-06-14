@@ -171,9 +171,10 @@ def _independent_regime_total(ti: TaxInput, regime: str) -> float:
 def verify(ti: TaxInput, computation: TaxComputation) -> tuple[bool, str]:
     """Verify the engine result against the independent re-computation.
 
-    Note: the independent path omits surcharge marginal relief, so verification
-    is treated as conclusive only when no surcharge applies; otherwise it is a
-    soft check noting the surcharge band.
+    Re-derives the tax for the filing regime through a separate code path and
+    compares it to the engine output. Note: the independent path omits surcharge
+    marginal relief, so verification is conclusive only when no surcharge
+    applies; otherwise it is a soft check noting the surcharge band.
 
     Args:
         ti: The consolidated input.
@@ -182,19 +183,14 @@ def verify(ti: TaxInput, computation: TaxComputation) -> tuple[bool, str]:
     Returns:
         ``(verified, note)``.
     """
-    old_check = _independent_regime_total(ti, "old")
-    new_check = _independent_regime_total(ti, "new")
+    check = _independent_regime_total(ti, computation.regime)
+    diff = abs(check - computation.result.total_tax_liability)
 
-    old_diff = abs(old_check - computation.old.total_tax_liability)
-    new_diff = abs(new_check - computation.new.total_tax_liability)
-
-    has_surcharge = computation.old.surcharge > 0 or computation.new.surcharge > 0
-    if old_diff <= VERIFY_TOLERANCE and new_diff <= VERIFY_TOLERANCE:
+    if diff <= VERIFY_TOLERANCE:
         return True, "Independent re-computation matches the engine output."
-    if has_surcharge:
+    if computation.result.surcharge > 0:
         return True, (
             "Independent check is approximate in the surcharge band "
-            f"(old diff {old_diff:.0f}, new diff {new_diff:.0f}); marginal relief differs.")
+            f"(diff {diff:.0f}); marginal relief differs.")
     return False, (
-        f"Mismatch detected (old diff {old_diff:.0f}, new diff {new_diff:.0f}). "
-        "Computation blocked pending review.")
+        f"Mismatch detected (diff {diff:.0f}). Computation blocked pending review.")

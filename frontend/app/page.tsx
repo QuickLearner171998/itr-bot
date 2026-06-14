@@ -50,7 +50,7 @@ export default function Home() {
             <div className="card feature">
               <div className="ic">🧮</div>
               <h3>Deterministic, verified math</h3>
-              <p>Old vs new regime compared, then re-computed independently to prove correctness.</p>
+              <p>Computed for your regime (from Form 16), then re-computed independently to prove correctness.</p>
             </div>
             <div className="card feature">
               <div className="ic">🧭</div>

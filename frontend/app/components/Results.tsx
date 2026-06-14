@@ -65,7 +65,7 @@ export function Results({ sessionId, onNext, onBack }: Props) {
         </div>
       )}
 
-      {computation && <RegimeCompare computation={computation} />}
+      {computation && <RegimeSummary computation={computation} />}
 
       <div className="btn-row">
         <button className="btn ghost" onClick={onBack}>Back</button>
@@ -77,45 +77,23 @@ export function Results({ sessionId, onNext, onBack }: Props) {
   );
 }
 
-function RegimeCompare({ computation }: { computation: any }) {
-  const { old, new: nw, recommended_regime, recommended_savings } = computation;
-  const maxTax = Math.max(1, old.total_tax_liability, nw.total_tax_liability);
-
-  const Card = ({ r, name }: { r: any; name: string }) => {
-    const win = recommended_regime === r.regime;
-    const payable = r.refund_or_payable;
-    return (
-      <div className={`regime-card ${win ? "win" : ""}`}>
-        {win && <span className="win-tag">Recommended</span>}
-        <div className="rl">{name}</div>
-        <div className="ra">₹{inr(r.total_tax_liability)}</div>
-        <div className="regime-bars">
-          <div
-            className="bf"
-            style={{
-              width: `${(r.total_tax_liability / maxTax) * 100}%`,
-              background: win
-                ? "linear-gradient(90deg, var(--accent-2), var(--good))"
-                : "linear-gradient(90deg, var(--accent), var(--accent-3))",
-            }}
-          />
-        </div>
-        <div className="guide-note">
-          Total income ₹{inr(r.total_income)} · {payable >= 0 ? "Payable" : "Refund"} ₹{inr(Math.abs(payable))}
-        </div>
-      </div>
-    );
-  };
-
+function RegimeSummary({ computation }: { computation: any }) {
+  const { result, regime } = computation;
+  const payable = result.refund_or_payable;
   return (
     <div style={{ marginTop: 22 }}>
-      <div className="regime-grid">
-        <Card r={old} name="Old Regime" />
-        <Card r={nw} name="New Regime (default)" />
+      <div className="regime-card win">
+        <span className="win-tag">{regime.toUpperCase()} regime · from Form 16</span>
+        <div className="rl">Total Tax Liability</div>
+        <div className="ra">₹{inr(result.total_tax_liability)}</div>
+        <div className="guide-note">
+          Total income ₹{inr(result.total_income)} ·{" "}
+          {payable >= 0 ? "Payable" : "Refund"} ₹{inr(Math.abs(payable))}
+        </div>
       </div>
       <div className="callout">
-        We recommend the <b>{recommended_regime.toUpperCase()} regime</b> — it saves you about{" "}
-        <b style={{ color: "var(--good)" }}>₹{inr(recommended_savings)}</b> in tax.
+        Computed under the <b>{regime.toUpperCase()} regime</b> (as per your Form 16). The
+        figures must be confirmed on the official portal before filing.
       </div>
     </div>
   );

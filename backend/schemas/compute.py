@@ -62,6 +62,10 @@ class TaxInput(BaseModel):
 
     age: int = 30
 
+    # Filing regime, inferred from Form 16 ("old"/"new"). New regime is the
+    # statutory default when Form 16 does not state one.
+    filing_regime: str = "new"
+
     salaries: list[SalaryComponent] = Field(default_factory=list)
     house_property_income: float = 0.0  # net (can be negative for self-occupied loss)
 
@@ -127,11 +131,9 @@ class RegimeResult(BaseModel):
 
 
 class TaxComputation(BaseModel):
-    """Comparison of both regimes plus verification metadata."""
+    """Computation for the chosen regime plus verification metadata."""
 
-    old: RegimeResult
-    new: RegimeResult
-    recommended_regime: str
-    recommended_savings: float = 0.0
+    result: RegimeResult
+    regime: str  # "old" | "new" (the regime the user is filing under)
     verified: bool = False
     verification_note: str = ""

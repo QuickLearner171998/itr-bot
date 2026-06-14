@@ -81,11 +81,6 @@ QUESTIONNAIRE: list[dict] = [
         {"id": "has_brought_forward_losses", "text": "Any brought-forward losses to carry?", "type": "bool"},
         {"id": "agricultural_income_above_5k", "text": "Agricultural income above 5,000?", "type": "bool"},
     ]},
-    {"section": "Regime", "questions": [
-        {"id": "preferred_regime", "text": "Preferred tax regime", "type": "choice",
-         "options": ["auto", "old", "new"], "default": "auto",
-         "help": "Auto compares both regimes and recommends the cheaper one."},
-    ]},
 ]
 
 
@@ -108,8 +103,6 @@ def build_profile(answers: dict) -> UserProfile:
         A ``UserProfile`` with unsure bool answers deferred.
     """
     cleaned = dict(answers)
-    if cleaned.get("preferred_regime") in ("auto", "", None):
-        cleaned["preferred_regime"] = None
     unsure = [k for k, v in cleaned.items()
               if v == UNSURE and k in UserProfile.model_fields]
     valid = {k: v for k, v in cleaned.items()

@@ -76,10 +76,8 @@ export interface RegimeResult {
 }
 
 export interface TaxComputation {
-  old: RegimeResult;
-  new: RegimeResult;
-  recommended_regime: string;
-  recommended_savings: number;
+  result: RegimeResult;
+  regime: string;
   verified: boolean;
   verification_note: string;
 }
