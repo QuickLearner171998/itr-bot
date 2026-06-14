@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     extraction_reasoning_effort: str = "low"
 
     # Doc-intelligence self-critique loop bound.
-    max_extraction_retries: int = 2
+    max_extraction_retries: int = 1
 
     # Storage locations. On Render free tier there is no persistent disk, so we
     # default to /tmp which survives the process lifetime (one session = one

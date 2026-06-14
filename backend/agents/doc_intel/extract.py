@@ -13,8 +13,10 @@ Field values are streamed to the UI one-by-one so extraction looks live.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import shutil
+from functools import lru_cache
 
 from pypdf import PdfReader
 
@@ -32,6 +34,7 @@ from ...schemas.events import EventType
 from ..llm import build_agent, parse_json, run_agent
 
 logger = get_logger(__name__)
+
 
 
 def _read_pdf_text(data: bytes, password: str | None) -> str:
@@ -80,7 +83,13 @@ def _render_pdf_images(data: bytes, password: str | None, max_pages: int = 3) ->
     return out
 
 
+@lru_cache(maxsize=None)
 def _extractor_agent(doc_type: DocType):
+    """Single-pass agent that extracts and self-critiques in one LLM call.
+
+    Cached per doc_type so the LlmAgent + LiteLlm objects are built once and
+    reused across all uploads — avoids repeated model/runner construction overhead.
+    """
     spec = DOC_REGISTRY[doc_type]
     field_lines = "\n".join(
         f"  - {f.name} ({f.type.value}): {f.description}" for f in spec.fields)
@@ -88,45 +97,26 @@ def _extractor_agent(doc_type: DocType):
         f"\nDOCUMENT STRUCTURE GUIDE:\n{spec.context_hint}\n"
         if spec.context_hint else "")
     instruction = (
-        "You are an expert Indian tax document extractor. You will be given the "
-        f"text and/or image of a '{spec.title}'."
+        "You are an expert Indian tax document extractor and verifier. "
+        f"You will be given the text and/or image of a '{spec.title}'."
         f"{context_section}\n"
         f"Extract ONLY these fields:\n{field_lines}\n\n"
-        "Rules:\n"
-        "- Return STRICT JSON: {\"fields\": {<name>: {\"value\": <number-or-string-or-null>, "
-        "\"confidence\": <0..1>, \"source_hint\": <short where-found note>}}}.\n"
+        "EXTRACTION RULES:\n"
         "- Money values are plain numbers (no commas/symbols).\n"
         "- SUM across multiple rows when the field description says to sum.\n"
         "- For AIS: prefer 'modified value' over 'reported value' when both exist.\n"
         "- If a field is genuinely absent, set value null and confidence 0.\n"
         "- Never guess; reflect uncertainty in a low confidence score.\n"
-        "- Do not output anything except the JSON object.")
+        "\nSELF-CRITIQUE: After extracting, re-verify each value against the source — "
+        "correct any wrong values, fill missed fields, and adjust confidence scores. "
+        "Pay special attention to summing rows that should be aggregated and fields "
+        "that may appear in a different section of the document.\n"
+        "\nReturn STRICT JSON only: {\"fields\": {<name>: {\"value\": <number-or-string-or-null>, "
+        "\"confidence\": <0..1>, \"source_hint\": <short where-found note>}}}. "
+        "Output only the JSON object.")
     return build_agent(
         name=f"extract_{doc_type.value}",
         model_id=settings.extraction_model,
-        instruction=instruction,
-        reasoning_effort=settings.extraction_reasoning_effort)
-
-
-def _critic_agent(doc_type: DocType):
-    spec = DOC_REGISTRY[doc_type]
-    context_section = (
-        f"\nDOCUMENT STRUCTURE GUIDE:\n{spec.context_hint}\n"
-        if spec.context_hint else "")
-    instruction = (
-        f"You are a meticulous reviewer of extracted '{spec.title}' data.{context_section}"
-        "You are given the source text/image and a candidate JSON extraction. "
-        "Re-verify every value against the source. Pay special attention to: "
-        "summing rows that should be aggregated, using 'modified value' over "
-        "'reported value' in AIS, and finding fields the extractor may have missed "
-        "in a different section of the document. "
-        "Correct wrong values, fill confidently missing ones, and lower confidence "
-        "(and set value null) where unsupported. "
-        "Return the SAME strict JSON schema: {\"fields\": {<name>: {\"value\":..., "
-        "\"confidence\":..., \"source_hint\":...}}}. Output only JSON.")
-    return build_agent(
-        name=f"critic_{doc_type.value}",
-        model_id=settings.validation_model,
         instruction=instruction,
         reasoning_effort=settings.extraction_reasoning_effort)
 
@@ -181,9 +171,11 @@ async def extract_document(
     images: list[bytes] = []
     text = ""
     if mime == "application/pdf":
-        text = _read_pdf_text(data, password)
+        # Run blocking pypdf/pdf2image calls in a thread so concurrent extractions
+        # don't starve each other on the async event loop.
+        text = await asyncio.to_thread(_read_pdf_text, data, password)
         if len(text.strip()) < 80:  # likely scanned -> need vision
-            images = _render_pdf_images(data, password)
+            images = await asyncio.to_thread(_render_pdf_images, data, password)
     else:
         images = [data]
 
@@ -196,25 +188,23 @@ async def extract_document(
     response = await run_agent(extractor, source_block,
                                images=images, image_mime="image/png")
     parsed = parse_json(response)
+    fields = _to_fields(doc_type, parsed)
 
-    # Self-critique feedback loop. Complex multi-section docs (AIS, Form 26AS)
-    # always get at least one critic pass; simpler docs only if fields are flagged.
-    _always_critique = doc_type in (DocType.AIS, DocType.FORM26AS, DocType.FORM16)
+    # Retry only if fields are still flagged after the combined extract+critique pass.
     for attempt in range(settings.max_extraction_retries):
-        fields = _to_fields(doc_type, parsed)
-        if not _always_critique and not any(f.flagged for f in fields):
+        if not any(f.flagged for f in fields):
             break
-        _always_critique = False  # first pass done; subsequent only if still flagged
         await bus.emit(session_id, EventType.AGENT_STEP,
-                       f"Self-critique pass {attempt + 1} on {spec.title}...",
+                       f"Re-extraction pass {attempt + 1} on {spec.title}...",
                        **ev)
-        critic = _critic_agent(doc_type)
-        critique_prompt = f"{source_block}\n\nCANDIDATE JSON:\n{response}"
-        response = await run_agent(critic, critique_prompt,
+        retry_prompt = (
+            f"{source_block}\n\nPREVIOUS ATTEMPT (has low-confidence fields — fix them):\n{response}")
+        response = await run_agent(extractor, retry_prompt,
                                    images=images, image_mime="image/png")
         new_parsed = parse_json(response)
         if new_parsed:
             parsed = new_parsed
+            fields = _to_fields(doc_type, parsed)
 
     fields = _to_fields(doc_type, parsed)
 
