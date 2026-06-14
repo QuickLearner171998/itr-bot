@@ -9,8 +9,10 @@ work intact.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sqlite3
+import time
 import uuid
 from collections import defaultdict
 from pathlib import Path
@@ -42,6 +44,12 @@ class SessionStore:
                 "id TEXT PRIMARY KEY, state TEXT NOT NULL, "
                 "created REAL DEFAULT (strftime('%s','now')), "
                 "updated REAL DEFAULT (strftime('%s','now')))"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS extraction_cache ("
+                "content_hash TEXT PRIMARY KEY, "
+                "extraction TEXT NOT NULL, "
+                "created REAL NOT NULL)"
             )
 
     def create(self) -> str:
@@ -106,6 +114,57 @@ class SessionStore:
             else:
                 docs[doc_type] = extraction
             self.update(session_id, {"documents": docs})
+
+    @staticmethod
+    def _content_hash(data: bytes) -> str:
+        return hashlib.sha256(data).hexdigest()
+
+    def cache_get(self, data: bytes) -> dict[str, Any] | None:
+        """Return a cached extraction for ``data`` if one exists and is fresh.
+
+        Args:
+            data: Raw file bytes whose SHA-256 is the cache key.
+
+        Returns:
+            Deserialised extraction dict, or ``None`` on a miss or expired entry.
+        """
+        if not settings.extraction_cache_ttl:
+            return None
+        key = self._content_hash(data)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT extraction, created FROM extraction_cache WHERE content_hash = ?",
+                (key,),
+            ).fetchone()
+        if row is None:
+            return None
+        age = time.time() - row["created"]
+        if age > settings.extraction_cache_ttl:
+            # Expired — evict lazily.
+            with self._connect() as conn:
+                conn.execute(
+                    "DELETE FROM extraction_cache WHERE content_hash = ?", (key,))
+            return None
+        logger.debug("extraction cache hit", extra={"hash": key[:12], "age_s": int(age)})
+        return json.loads(row["extraction"])
+
+    def cache_set(self, data: bytes, extraction: dict[str, Any]) -> None:
+        """Store an extraction result keyed by the SHA-256 of ``data``.
+
+        Args:
+            data: Raw file bytes.
+            extraction: Serialised ``DocumentExtraction`` to cache.
+        """
+        if not settings.extraction_cache_ttl:
+            return
+        key = self._content_hash(data)
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO extraction_cache (content_hash, extraction, created) "
+                "VALUES (?, ?, ?)",
+                (key, json.dumps(extraction, default=str), time.time()),
+            )
+        logger.debug("extraction cached", extra={"hash": key[:12]})
 
     def upload_dir(self, session_id: str) -> Path:
         """Return (creating if needed) the upload directory for a session."""

@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     # Server / CORS.
     cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
+    # Extraction cache TTL in seconds (default 7 days). Set to 0 to disable.
+    extraction_cache_ttl: int = 7 * 24 * 3600
+
     # Assessment year context.
     assessment_year: str = "2026-27"
     financial_year: str = "2025-26"

@@ -15,9 +15,15 @@ class SalaryComponent(BaseModel):
     """Salary from a single employer (supports job changes in a year)."""
 
     employer_name: str = "Employer"
+    period_from: str = ""   # dd/mm/yyyy or free text from Form 16 Part A
+    period_to: str = ""
     gross_salary: float = 0.0
+    salary_17_1: float = 0.0          # basic salary u/s 17(1)
+    perquisites_17_2: float = 0.0     # perquisites u/s 17(2)
+    profits_in_lieu_17_3: float = 0.0 # profits in lieu of salary u/s 17(3)
     exempt_allowances: float = 0.0
     professional_tax: float = 0.0
+    taxable_salary: float = 0.0       # net taxable salary (cross-check)
     tds: float = 0.0
 
 
@@ -84,8 +90,10 @@ class TaxInput(BaseModel):
 
     savings_interest: float = 0.0
     fd_interest: float = 0.0
+    interest_on_bonds: float = 0.0    # interest on bonds/debentures/govt securities
     dividend: float = 0.0
-    family_pension: float = 0.0  # taxed under other sources; 1/3 std deduction
+    family_pension: float = 0.0       # taxed under other sources; 1/3 std deduction
+    interest_on_it_refund: float = 0.0  # Sec 244A interest on IT refund (taxable)
     other_income: float = 0.0
 
     agricultural_income: float = 0.0  # for rate purposes (partial integration)
@@ -96,8 +104,10 @@ class TaxInput(BaseModel):
 
     # Taxes already paid and reliefs.
     tds_total: float = 0.0
+    tcs_total: float = 0.0       # Tax Collected at Source (car, property, LRS)
     advance_tax: float = 0.0
     self_assessment_tax: float = 0.0
+    tds_on_property_purchase: float = 0.0  # 194IA credit for buyer
     relief_89: float = 0.0       # arrears relief
     relief_90_91: float = 0.0    # foreign tax credit (DTAA / unilateral)
 

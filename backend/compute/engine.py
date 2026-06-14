@@ -316,8 +316,8 @@ def compute_regime(ti: TaxInput, regime: str) -> RegimeResult:
     fp = ti.family_pension
     fp_cap = K.NEW_FAMILY_PENSION_DEDUCTION_CAP if regime == "new" else K.FAMILY_PENSION_CAP_OLD
     fp_deduction = min(fp * K.FAMILY_PENSION_DED_RATE, fp_cap) if fp else 0.0
-    other_sources = (ti.savings_interest + ti.fd_interest + ti.dividend
-                     + ti.other_income + fp)
+    other_sources = (ti.savings_interest + ti.fd_interest + ti.interest_on_bonds
+                     + ti.dividend + ti.interest_on_it_refund + ti.other_income + fp)
     stcg_other = ti.capital_gains.stcg_other  # slab-rate, part of normal income
     if other_sources:
         steps.append(ComputeStep(key="other_sources", label="Income from Other Sources", amount=other_sources, kind="add"))
@@ -400,8 +400,9 @@ def compute_regime(ti: TaxInput, regime: str) -> RegimeResult:
     total_tax = _round_to_ten(gross_tax - relief)
     steps.append(ComputeStep(key="total_tax", label="Total Tax Liability", amount=total_tax, kind="total"))
 
-    taxes_paid = ti.tds_total + ti.advance_tax + ti.self_assessment_tax
-    steps.append(ComputeStep(key="taxes_paid", label="Less: Taxes Already Paid (TDS/Advance)", amount=taxes_paid, kind="subtract"))
+    taxes_paid = (ti.tds_total + ti.tcs_total + ti.advance_tax
+                  + ti.self_assessment_tax + ti.tds_on_property_purchase)
+    steps.append(ComputeStep(key="taxes_paid", label="Less: Taxes Already Paid (TDS/TCS/Advance)", amount=taxes_paid, kind="subtract"))
 
     refund_or_payable = _round_to_ten(total_tax - taxes_paid)
     label = "Tax Payable" if refund_or_payable >= 0 else "Refund Due"

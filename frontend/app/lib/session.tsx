@@ -65,12 +65,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [computation, setComputation] = useState<TaxComputation | null>(null);
   const [verification, setVerification] = useState<{ verified: boolean; note: string } | null>(null);
   const [busy, setBusy] = useState(false);
-  const counter = useRef(0);
-
   const pushActivity = (kind: Activity["kind"], text: string) => {
     if (!text) return;
-    counter.current += 1;
-    setActivity((a) => [{ id: counter.current, kind, text }, ...a].slice(0, 60));
+    const id = Date.now() * 1000 + Math.floor(Math.random() * 1000);
+    setActivity((a) => [{ id, kind, text }, ...a].slice(0, 60));
   };
 
   const handleEvent = (ev: StreamEvent) => {

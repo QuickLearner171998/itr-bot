@@ -35,10 +35,29 @@ logger = get_logger(__name__)
 
 
 def _read_pdf_text(data: bytes, password: str | None) -> str:
-    """Extract text from a (possibly encrypted) PDF."""
+    """Extract text from a (possibly encrypted) PDF.
+
+    pypdf's ``decrypt`` must be called before accessing pages. AIS PDFs may use
+    an owner password; we try the str form first, then the bytes form as a
+    fallback (some PDF writers require the latter).
+    """
+    from pypdf import PasswordType
+
     reader = PdfReader(io.BytesIO(data))
-    if reader.is_encrypted and password:
-        reader.decrypt(password)
+    if reader.is_encrypted:
+        if not password:
+            raise ValueError("PDF is encrypted but no password was provided.")
+        # The IT-dept AIS portal uses lowercase PAN + DOB; some other PDFs use
+        # uppercase. Try all variants before giving up.
+        candidates = [password, password.lower(), password.upper(),
+                      password.encode(), password.lower().encode(), password.upper().encode()]
+        result = PasswordType.NOT_DECRYPTED
+        for candidate in candidates:
+            result = reader.decrypt(candidate)  # type: ignore[arg-type]
+            if result != PasswordType.NOT_DECRYPTED:
+                break
+        if result == PasswordType.NOT_DECRYPTED:
+            raise ValueError("Incorrect PDF password — could not decrypt the file.")
     return "\n".join((page.extract_text() or "") for page in reader.pages)
 
 
@@ -51,6 +70,7 @@ def _render_pdf_images(data: bytes, password: str | None, max_pages: int = 3) ->
     kwargs = {"first_page": 1, "last_page": max_pages, "fmt": "png"}
     if password:
         kwargs["userpw"] = password
+        kwargs["ownerpw"] = password
     images = convert_from_bytes(data, **kwargs)
     out: list[bytes] = []
     for img in images:
@@ -64,16 +84,22 @@ def _extractor_agent(doc_type: DocType):
     spec = DOC_REGISTRY[doc_type]
     field_lines = "\n".join(
         f"  - {f.name} ({f.type.value}): {f.description}" for f in spec.fields)
+    context_section = (
+        f"\nDOCUMENT STRUCTURE GUIDE:\n{spec.context_hint}\n"
+        if spec.context_hint else "")
     instruction = (
         "You are an expert Indian tax document extractor. You will be given the "
-        f"text and/or image of a '{spec.title}'. Extract ONLY these fields:\n"
-        f"{field_lines}\n\n"
+        f"text and/or image of a '{spec.title}'."
+        f"{context_section}\n"
+        f"Extract ONLY these fields:\n{field_lines}\n\n"
         "Rules:\n"
         "- Return STRICT JSON: {\"fields\": {<name>: {\"value\": <number-or-string-or-null>, "
         "\"confidence\": <0..1>, \"source_hint\": <short where-found note>}}}.\n"
         "- Money values are plain numbers (no commas/symbols).\n"
+        "- SUM across multiple rows when the field description says to sum.\n"
+        "- For AIS: prefer 'modified value' over 'reported value' when both exist.\n"
         "- If a field is genuinely absent, set value null and confidence 0.\n"
-        "- Never guess; reflect uncertainty in a low confidence.\n"
+        "- Never guess; reflect uncertainty in a low confidence score.\n"
         "- Do not output anything except the JSON object.")
     return build_agent(
         name=f"extract_{doc_type.value}",
@@ -84,11 +110,18 @@ def _extractor_agent(doc_type: DocType):
 
 def _critic_agent(doc_type: DocType):
     spec = DOC_REGISTRY[doc_type]
+    context_section = (
+        f"\nDOCUMENT STRUCTURE GUIDE:\n{spec.context_hint}\n"
+        if spec.context_hint else "")
     instruction = (
-        f"You are a meticulous reviewer of extracted '{spec.title}' data. You are "
-        "given the source text/image and a candidate JSON extraction. Re-verify "
-        "every value against the source. Correct wrong values, fill confidently "
-        "missing ones, and lower confidence (and set value null) where unsupported. "
+        f"You are a meticulous reviewer of extracted '{spec.title}' data.{context_section}"
+        "You are given the source text/image and a candidate JSON extraction. "
+        "Re-verify every value against the source. Pay special attention to: "
+        "summing rows that should be aggregated, using 'modified value' over "
+        "'reported value' in AIS, and finding fields the extractor may have missed "
+        "in a different section of the document. "
+        "Correct wrong values, fill confidently missing ones, and lower confidence "
+        "(and set value null) where unsupported. "
         "Return the SAME strict JSON schema: {\"fields\": {<name>: {\"value\":..., "
         "\"confidence\":..., \"source_hint\":...}}}. Output only JSON.")
     return build_agent(
@@ -164,11 +197,14 @@ async def extract_document(
                                images=images, image_mime="image/png")
     parsed = parse_json(response)
 
-    # Self-critique feedback loop.
+    # Self-critique feedback loop. Complex multi-section docs (AIS, Form 26AS)
+    # always get at least one critic pass; simpler docs only if fields are flagged.
+    _always_critique = doc_type in (DocType.AIS, DocType.FORM26AS, DocType.FORM16)
     for attempt in range(settings.max_extraction_retries):
         fields = _to_fields(doc_type, parsed)
-        if not any(f.flagged for f in fields):
+        if not _always_critique and not any(f.flagged for f in fields):
             break
+        _always_critique = False  # first pass done; subsequent only if still flagged
         await bus.emit(session_id, EventType.AGENT_STEP,
                        f"Self-critique pass {attempt + 1} on {spec.title}...",
                        **ev)

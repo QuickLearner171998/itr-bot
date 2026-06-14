@@ -26,6 +26,7 @@ interface LocalUpload {
   fileName: string;
   previewUrl: string;
   kind: "image" | "pdf" | "other";
+  locked?: boolean; // password-protected PDF — browser can't preview
   failed?: boolean;
 }
 
@@ -63,7 +64,8 @@ export function Upload({ checklist, sessionId, onNext, onBack }: Props) {
     setUploads((u) => {
       // Single-upload types: replace any prior local entry for that type.
       const base = isMulti ? u : u.filter((x) => x.docType !== docType);
-      return [...base, { uploadId, docType, fileName: file.name, previewUrl, kind }];
+      const locked = kind === "pdf" && !!password;
+      return [...base, { uploadId, docType, fileName: file.name, previewUrl, kind, locked }];
     });
     try {
       await api.uploadDocument(sessionId, docType, file, password, uploadId);
@@ -146,12 +148,12 @@ function DocTypeSection({
   const isMulti = MULTI_UPLOAD_TYPES.has(item.doc_type);
   const needsPassword = item.doc_type === "ais";
   const [open, setOpen] = useState(item.required);
-  // AIS PDFs are encrypted with PAN (uppercase) + DOB as ddmmyyyy.
+  // AIS PDFs are encrypted with PAN + DOB as ddmmyyyy (portal uses lowercase).
   const [pan, setPan] = useState("");
   const [dob, setDob] = useState(""); // yyyy-mm-dd from the date picker
   const aisPassword =
     needsPassword && pan.trim() && dob
-      ? pan.trim().toUpperCase() + dob.split("-").reverse().join("")
+      ? pan.trim() + dob.split("-").reverse().join("")
       : undefined;
 
   const live = uploads.map((u) => liveDocs[u.uploadId]);
@@ -298,10 +300,21 @@ function UploadTile({
           <div className="ut-preview">
             {upload.kind === "image" ? (
               <img src={upload.previewUrl} alt={upload.fileName} />
-            ) : upload.kind === "pdf" ? (
+            ) : upload.kind === "pdf" && !upload.locked ? (
               <embed src={`${upload.previewUrl}#toolbar=0&navpanes=0`} type="application/pdf" />
             ) : (
-              <div className="ut-preview-none">{docIcon(upload.docType)}</div>
+              <div className="ut-preview-none">
+                {upload.locked ? (
+                  <>
+                    <span style={{ fontSize: 28 }}>🔒</span>
+                    <span style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6 }}>
+                      Encrypted PDF
+                    </span>
+                  </>
+                ) : (
+                  docIcon(upload.docType)
+                )}
+              </div>
             )}
           </div>
 

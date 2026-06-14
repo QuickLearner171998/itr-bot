@@ -48,6 +48,7 @@ class DocSpec(BaseModel):
 
     doc_type: DocType
     title: str
+    context_hint: str = ""  # Document-structure guidance injected into the extractor prompt.
     fields: list[FieldSpec]
 
 
@@ -91,20 +92,48 @@ DOC_REGISTRY: dict[DocType, DocSpec] = {
     DocType.FORM16: DocSpec(
         doc_type=DocType.FORM16,
         title="Form 16 (Salary TDS Certificate)",
+        context_hint=(
+            "Form 16 has two parts. "
+            "PART A (generated from TRACES): contains employer TAN, employee PAN, "
+            "employer name/address, quarter-wise TDS deposit summary, and the "
+            "period of employment (From/To dates). "
+            "PART B (prepared by employer): contains the salary computation — "
+            "Gross Salary broken into Sec 17(1) salary, 17(2) perquisites and "
+            "17(3) profits in lieu; then Sec 10 exempt allowances (HRA, LTA, "
+            "gratuity, leave encashment); then Sec 16 deductions (standard "
+            "deduction, professional tax); then Net Taxable Salary; then "
+            "Chapter VI-A deductions (80C, 80CCD(1B), 80CCD(2), 80D); then "
+            "total taxable income, tax computed, 87A rebate, and total TDS. "
+            "The employer also states which regime (old/new) was used. "
+            "Look carefully at both parts — period dates are in Part A, "
+            "perquisites and profits-in-lieu are often in Part B's salary table."
+        ),
         fields=[
             FieldSpec(name="employer_name", label="Employer Name", type=FieldType.TEXT,
                       description="Name of the employer / deductor.", required=True),
             FieldSpec(name="employer_tan", label="Employer TAN", type=FieldType.TEXT,
                       description="TAN of the employer."),
+            FieldSpec(name="period_from", label="Employment From", type=FieldType.TEXT,
+                      description="Start date of employment with this employer (dd/mm/yyyy or month name)."),
+            FieldSpec(name="period_to", label="Employment To", type=FieldType.TEXT,
+                      description="End date of employment with this employer (dd/mm/yyyy or month name)."),
             FieldSpec(name="gross_salary", label="Gross Salary (Sec 17(1)+17(2)+17(3))",
                       description="Total gross salary including perquisites and profits in lieu.",
                       required=True),
+            FieldSpec(name="salary_17_1", label="Salary u/s 17(1)",
+                      description="Basic salary, allowances and wages as per Sec 17(1)."),
+            FieldSpec(name="perquisites_17_2", label="Perquisites u/s 17(2)",
+                      description="Value of perquisites (rent-free accommodation, car, ESOP, etc.) as per Sec 17(2)."),
+            FieldSpec(name="profits_in_lieu_17_3", label="Profits in Lieu of Salary u/s 17(3)",
+                      description="Compensation on termination, ex-gratia, keyman insurance premium, etc."),
             FieldSpec(name="exempt_allowances", label="Exempt Allowances u/s 10",
-                      description="Total allowances exempt under section 10 (HRA, LTA, etc.)."),
+                      description="Total allowances exempt under section 10 (HRA, LTA, gratuity, leave encashment, etc.)."),
             FieldSpec(name="standard_deduction", label="Standard Deduction",
                       description="Standard deduction u/s 16(ia)."),
             FieldSpec(name="professional_tax", label="Professional Tax u/s 16(iii)",
                       description="Professional tax / tax on employment."),
+            FieldSpec(name="taxable_salary", label="Net Taxable Salary",
+                      description="Gross salary minus exempt allowances and Sec 16 deductions — the salary chargeable to tax."),
             FieldSpec(name="deduction_80c", label="Deduction u/s 80C",
                       description="Aggregate 80C deduction reported by employer."),
             FieldSpec(name="deduction_80ccd1b", label="Deduction u/s 80CCD(1B) (NPS self)",
@@ -134,35 +163,95 @@ DOC_REGISTRY: dict[DocType, DocSpec] = {
     DocType.FORM26AS: DocSpec(
         doc_type=DocType.FORM26AS,
         title="Form 26AS (Annual Tax Statement)",
+        context_hint=(
+            "Form 26AS is a multi-part tax credit statement from the IT department. "
+            "PART A / A1 / B: TDS deducted by deductors — sum salary TDS (Part A) "
+            "and non-salary TDS (Parts A1/B) separately. "
+            "PART C: Tax paid directly — Advance Tax and Self-Assessment Tax with "
+            "BSR codes and amounts. "
+            "PART D: Refund paid to the taxpayer (if any) — record amount. "
+            "PART F: TDS on immovable property purchases u/s 194IA — deducted by "
+            "the buyer and credited here; this is a tax credit for the buyer. "
+            "PART G / TCS: Tax Collected at Source (e.g. on purchase of car, "
+            "gold, foreign remittance LRS) — these are also tax credits. "
+            "SUM all TDS on salary rows for total_tds_salary; SUM all non-salary "
+            "TDS rows for total_tds_other; SUM all TCS rows for tcs_total."
+        ),
         fields=[
             FieldSpec(name="total_tds_salary", label="TDS on Salary",
-                      description="Total TDS on salary across all deductors."),
+                      description="Total TDS on salary across all deductors (Part A of Form 26AS)."),
             FieldSpec(name="total_tds_other", label="TDS on Other Income",
-                      description="Total TDS on non-salary income (interest, dividend, etc.)."),
+                      description="Total TDS on non-salary income (interest, dividend, etc.) — Parts A, A1, B."),
+            FieldSpec(name="tcs_total", label="Total TCS",
+                      description="Total Tax Collected at Source (Part B of Form 26AS, e.g. on car/property purchase)."),
             FieldSpec(name="advance_tax", label="Advance Tax Paid",
-                      description="Total advance tax paid during the year."),
+                      description="Total advance tax paid during the year (Part C)."),
             FieldSpec(name="self_assessment_tax", label="Self-Assessment Tax Paid",
-                      description="Self-assessment tax paid."),
+                      description="Self-assessment tax paid (Part C)."),
+            FieldSpec(name="tds_on_property_purchase", label="TDS on Property Purchase (194IA)",
+                      description="TDS deducted by buyer and credited to seller on sale of immovable property (Part F). Acts as a tax credit for the buyer."),
+            FieldSpec(name="refund_paid", label="Refund Received",
+                      description="Income-tax refund received during the year (Part D). Reported in ITR for information."),
         ],
     ),
     DocType.AIS: DocSpec(
         doc_type=DocType.AIS,
         title="Annual Information Statement (AIS)",
+        context_hint=(
+            "The AIS is a comprehensive statement from the IT department (incometax.gov.in). "
+            "PART A: General info (PAN, name, DOB) — skip. "
+            "PART B has multiple sections — scan ALL of them: "
+            "(1) TDS/TCS Information: rows of TDS/TCS deducted by various deductors. "
+            "   Sum TDS on salary rows → salary_reported. "
+            "   Sum TDS on interest rows → fd_interest or savings_interest. "
+            "   TDS u/s 194S (virtual digital assets) → vda_tds. "
+            "   TCS rows → tcs_total. "
+            "(2) SFT Information (Specified Financial Transactions from banks/brokers/RTA): "
+            "   'Sale of securities / units of mutual fund' → sale_of_securities. "
+            "   'Purchase of securities / units of mutual funds' → purchase_of_securities. "
+            "   'Interest on deposits' → fd_interest. "
+            "   'Interest on savings account' → savings_interest. "
+            "(3) Payment of Taxes: Advance Tax → advance_tax; Self-Assessment Tax → self_assessment_tax. "
+            "(4) Other Information: "
+            "   Dividend from companies/MFs → dividend. "
+            "   Interest on Income-Tax Refund (u/s 244A) → interest_on_it_refund. "
+            "   Family pension → family_pension. "
+            "   Rent received → rent_received. "
+            "   Interest on bonds/debentures → interest_on_bonds. "
+            "Sum all TDS/TCS amounts for tds_total. "
+            "The AIS often shows both 'reported value' and 'modified value' — always use the MODIFIED value if present, otherwise use the reported value."
+        ),
         fields=[
             FieldSpec(name="salary_reported", label="Salary Reported",
-                      description="Salary as reported by employers in AIS."),
+                      description="Salary as reported by employers in the AIS (Annexure II / SFT data)."),
             FieldSpec(name="savings_interest", label="Savings Bank Interest",
-                      description="Interest from savings accounts."),
+                      description="Interest from savings accounts as reported to IT dept by banks."),
             FieldSpec(name="fd_interest", label="Interest on Deposits (FD/RD)",
-                      description="Interest from term deposits."),
+                      description="Interest from term/recurring deposits."),
+            FieldSpec(name="interest_on_bonds", label="Interest on Bonds / Govt Securities",
+                      description="Interest on bonds, debentures and government securities."),
             FieldSpec(name="dividend", label="Dividend Income",
-                      description="Total dividend received."),
+                      description="Total dividend received (reported by companies/MFs via TDS returns)."),
             FieldSpec(name="family_pension", label="Family Pension Received",
                       description="Family pension received during the year (taxed under other sources)."),
-            FieldSpec(name="sale_of_securities", label="Sale of Securities / Units",
-                      description="Aggregate sale value of securities reported."),
-            FieldSpec(name="tds_total", label="Total TDS/TCS Reported",
-                      description="Total TDS/TCS reported in AIS."),
+            FieldSpec(name="interest_on_it_refund", label="Interest on IT Refund (Sec 244A)",
+                      description="Interest received from the income-tax dept on a refund. Taxable as other income."),
+            FieldSpec(name="rent_received", label="Rent Received",
+                      description="Rent received as reported by tenants under SFT / 194I TDS. Indicates let-out property income."),
+            FieldSpec(name="sale_of_securities", label="Sale of Securities / MF Units",
+                      description="Aggregate sale (credit) value of securities and mutual fund units as reported by broker/RTA."),
+            FieldSpec(name="purchase_of_securities", label="Purchase of Securities / MF Units",
+                      description="Aggregate purchase (debit) cost of securities and MF units. Helps estimate capital-gains cost basis when no broker P&L is available."),
+            FieldSpec(name="vda_tds", label="TDS on Crypto / VDA (Sec 194S)",
+                      description="TDS deducted on transfer of virtual digital assets. Indicates crypto income to disclose."),
+            FieldSpec(name="advance_tax", label="Advance Tax Paid",
+                      description="Advance tax payments as reflected in AIS (cross-check with Form 26AS)."),
+            FieldSpec(name="self_assessment_tax", label="Self-Assessment Tax Paid",
+                      description="Self-assessment tax as reflected in AIS."),
+            FieldSpec(name="tcs_total", label="Total TCS",
+                      description="Tax Collected at Source as reflected in AIS (e.g. TCS on car purchase, LRS remittances)."),
+            FieldSpec(name="tds_total", label="Total TDS Reported in AIS",
+                      description="Aggregate TDS as per AIS — use as cross-check against Form 26AS."),
         ],
     ),
     DocType.BROKER_PNL: DocSpec(

@@ -249,15 +249,36 @@ async def _extract_and_store(
     session_id: str, dtype: DocType, filename: str, data: bytes,
     mime: str, password: str | None, upload_id: str,
 ) -> None:
-    """Run extraction for one uploaded file and persist the result."""
+    """Run extraction for one uploaded file, using the content cache when available.
+
+    Cache is keyed by SHA-256 of the raw file bytes so the same file never costs
+    an LLM call twice, regardless of filename or session. Encrypted files are cached
+    by their ciphertext, so a wrong-password retry will miss (correct behaviour).
+    """
     session_id_var.set(session_id)
     try:
+        cached = store.cache_get(data)
+        if cached:
+            await bus.emit(session_id, EventType.DOC_COMPLETED,
+                           f"Loaded {dtype.value} from cache",
+                           doc_type=dtype.value, upload_id=upload_id)
+            await store.add_document(
+                session_id, dtype.value, cached,
+                multi=dtype in _MULTI_UPLOAD_TYPES)
+            return
+
         extraction = await extract_document(
             session_id, dtype, filename, data,
             mime=mime, password=password, upload_id=upload_id)
+        store.cache_set(data, extraction.model_dump())
         await store.add_document(
             session_id, dtype.value, extraction.model_dump(),
             multi=dtype in _MULTI_UPLOAD_TYPES)
+    except ValueError as exc:
+        logger.warning("extraction input error", extra={
+            "doc_type": dtype.value, "upload_id": upload_id, "error": str(exc)})
+        await bus.emit(session_id, EventType.ERROR, str(exc),
+                       doc_type=dtype.value, upload_id=upload_id)
     except Exception:
         logger.exception("background extraction failed",
                          extra={"doc_type": dtype.value, "upload_id": upload_id})

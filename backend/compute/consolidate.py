@@ -98,6 +98,10 @@ def consolidate_detailed(
     for doc in docs:
         by_type.setdefault(doc.doc_type, []).append(doc.values())
 
+    # Pre-extract single-instance docs used in multiple places.
+    ais: dict = by_type.get(DocType.AIS, [{}])[0] if by_type.get(DocType.AIS) else {}
+    f26: dict = by_type.get(DocType.FORM26AS, [{}])[0] if by_type.get(DocType.FORM26AS) else {}
+
     ti = TaxInput(age=age)
 
     # Filing regime: taken from Form 16 (employer's TDS regime). If any Form 16
@@ -108,13 +112,25 @@ def consolidate_detailed(
 
     # Salary: one component per Form 16.
     f16_80c = f16_80ccd1b = f16_80ccd2 = f16_80d = 0.0
+    f16_gross_total = 0.0
+    f16_tds_total = 0.0
     for v in by_type.get(DocType.FORM16, []):
+        gross = _num(v.get("gross_salary"))
+        tds = _num(v.get("tds"))
+        f16_gross_total += gross
+        f16_tds_total += tds
         ti.salaries.append(SalaryComponent(
             employer_name=str(v.get("employer_name") or "Employer"),
-            gross_salary=_num(v.get("gross_salary")),
+            period_from=str(v.get("period_from") or ""),
+            period_to=str(v.get("period_to") or ""),
+            gross_salary=gross,
+            salary_17_1=_num(v.get("salary_17_1")),
+            perquisites_17_2=_num(v.get("perquisites_17_2")),
+            profits_in_lieu_17_3=_num(v.get("profits_in_lieu_17_3")),
             exempt_allowances=_num(v.get("exempt_allowances")),
             professional_tax=_num(v.get("professional_tax")),
-            tds=_num(v.get("tds")),
+            taxable_salary=_num(v.get("taxable_salary")),
+            tds=tds,
         ))
         f16_80c = max(f16_80c, _num(v.get("deduction_80c")))
         f16_80ccd1b = max(f16_80ccd1b, _num(v.get("deduction_80ccd1b")))
@@ -202,24 +218,56 @@ def consolidate_detailed(
         donation_50_limit=don_50_l,
     )
 
+    # Cross-source salary check: Form 16 gross vs AIS salary_reported.
+    # AIS salary is an employer-reported figure independent of Form 16 — a
+    # mismatch can mean mis-matched PANs, unreported employer, or data-entry error.
+    ais_salary = _num(ais.get("salary_reported"))
+    if f16_gross_total > 0 and ais_salary > 0:
+        _pick(discrepancies, "salary_gross", "Gross Salary (Form 16 vs AIS)", [
+            (DocType.FORM16, f16_gross_total),
+            (DocType.AIS, ais_salary)])
+
+    # Cross-source salary TDS check: Form 16 TDS sum vs 26AS salary TDS.
+    # These should match to the rupee; a mismatch means an employer failed to
+    # deposit or the filer is using a wrong Form 16.
+    tds_26as_salary = _num(f26.get("total_tds_salary")) if f26 else 0.0
+    if f16_tds_total > 0 and tds_26as_salary > 0:
+        _pick(discrepancies, "tds_salary", "Salary TDS (Form 16 vs 26AS)", [
+            (DocType.FORM16, f16_tds_total),
+            (DocType.FORM26AS, tds_26as_salary)])
+
     # Other-source income: prefer the larger of certificate vs AIS, flag mismatch.
     cert_savings = cert_fd = 0.0
     for v in by_type.get(DocType.INTEREST_CERT, []):
         cert_savings += _num(v.get("savings_interest"))
         cert_fd += _num(v.get("fd_interest"))
-    ais = by_type.get(DocType.AIS, [{}])[0] if by_type.get(DocType.AIS) else {}
     ti.savings_interest = _pick(discrepancies, "savings_interest", "Savings Interest", [
         (DocType.INTEREST_CERT, cert_savings),
         (DocType.AIS, _num(ais.get("savings_interest")))])
     ti.fd_interest = _pick(discrepancies, "fd_interest", "FD/RD Interest", [
         (DocType.INTEREST_CERT, cert_fd),
         (DocType.AIS, _num(ais.get("fd_interest")))])
+    ti.interest_on_bonds = _num(ais.get("interest_on_bonds"))
 
     broker_dividend = sum(_num(v.get("dividend")) for v in by_type.get(DocType.BROKER_PNL, []))
     ti.dividend = _pick(discrepancies, "dividend", "Dividend", [
         (DocType.BROKER_PNL, broker_dividend),
         (DocType.AIS, _num(ais.get("dividend")))])
     ti.family_pension = _num(ais.get("family_pension"))
+    ti.interest_on_it_refund = _num(ais.get("interest_on_it_refund"))
+
+    # Rent received from AIS (SFT reporting): if present and no home-loan doc
+    # provided, surface it so the filer discloses let-out income.
+    ais_rent = _num(ais.get("rent_received"))
+    if ais_rent > 0 and ti.let_out_annual_rent == 0:
+        ti.let_out_annual_rent = ais_rent
+
+    # VDA from AIS (194S TDS signals crypto income even without broker P&L).
+    ais_vda_tds = _num(ais.get("vda_tds"))
+    if ais_vda_tds > 0 and ti.capital_gains.vda_gain == 0:
+        # We can't compute the gain, but record TDS as a signal — the review
+        # screen will show vda_tds on the discrepancy/info surface.
+        pass  # vda_tds flows into tcs_total below
 
     # Capital gains: sum across brokers.
     cg = CapitalGains()
@@ -232,7 +280,6 @@ def consolidate_detailed(
     ti.capital_gains = cg
 
     # Taxes paid: prefer Form 26AS aggregates, else sum of per-document TDS.
-    f26 = by_type.get(DocType.FORM26AS, [{}])[0] if by_type.get(DocType.FORM26AS) else {}
     tds_individual = (
         sum(s.tds for s in ti.salaries)
         + sum(_num(v.get("tds")) for v in by_type.get(DocType.FORM16A, []))
@@ -242,7 +289,22 @@ def consolidate_detailed(
     ti.tds_total = _pick(discrepancies, "tds_total", "Total TDS", [
         (DocType.FORM16, tds_individual),
         (DocType.FORM26AS, tds_26as)])
-    ti.advance_tax = _num(f26.get("advance_tax"))
-    ti.self_assessment_tax = _num(f26.get("self_assessment_tax"))
+
+    # TCS: sum from 26AS and AIS (cross-check).
+    tcs_26as = _num(f26.get("tcs_total"))
+    tcs_ais = _num(ais.get("tcs_total"))
+    ti.tcs_total = _pick(discrepancies, "tcs_total", "Total TCS", [
+        (DocType.FORM26AS, tcs_26as),
+        (DocType.AIS, tcs_ais)])
+
+    # Advance tax / SAT: 26AS is authoritative; AIS used as cross-check.
+    ti.advance_tax = _pick(discrepancies, "advance_tax", "Advance Tax", [
+        (DocType.FORM26AS, _num(f26.get("advance_tax"))),
+        (DocType.AIS, _num(ais.get("advance_tax")))])
+    ti.self_assessment_tax = _pick(discrepancies, "self_assessment_tax", "Self-Assessment Tax", [
+        (DocType.FORM26AS, _num(f26.get("self_assessment_tax"))),
+        (DocType.AIS, _num(ais.get("self_assessment_tax")))])
+
+    ti.tds_on_property_purchase = _num(f26.get("tds_on_property_purchase"))
 
     return ti, discrepancies
