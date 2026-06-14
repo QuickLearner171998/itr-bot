@@ -16,11 +16,14 @@ export const api = {
   getState: (sid: string) =>
     fetch(`${API_BASE}/api/session/${sid}/state`).then(jsonOrThrow),
 
-  getQuestionnaire: () =>
-    fetch(`${API_BASE}/api/questionnaire`).then(jsonOrThrow),
+  getBaseChecklist: () =>
+    fetch(`${API_BASE}/api/base-checklist`).then(jsonOrThrow),
 
-  submitIntake: (sid: string, answers: Record<string, any>) =>
-    fetch(`${API_BASE}/api/session/${sid}/intake`, {
+  analyzeGaps: (sid: string) =>
+    fetch(`${API_BASE}/api/session/${sid}/analyze-gaps`, { method: "POST" }).then(jsonOrThrow),
+
+  submitGaps: (sid: string, answers: Record<string, any>) =>
+    fetch(`${API_BASE}/api/session/${sid}/submit-gaps`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(answers),
@@ -55,6 +58,18 @@ export const api = {
     fetch(`${API_BASE}/api/session/${sid}/reconcile`, { method: "POST" }).then(
       jsonOrThrow
     ),
+
+  consolidatePreview: (sid: string) =>
+    fetch(`${API_BASE}/api/session/${sid}/consolidate`, { method: "POST" }).then(
+      jsonOrThrow
+    ),
+
+  saveTaxInput: (sid: string, taxInput: Record<string, any>) =>
+    fetch(`${API_BASE}/api/session/${sid}/tax-input`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(taxInput),
+    }).then(jsonOrThrow),
 
   compute: (sid: string) =>
     fetch(`${API_BASE}/api/session/${sid}/compute`, { method: "POST" }).then(

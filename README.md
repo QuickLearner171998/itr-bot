@@ -11,8 +11,9 @@ mirrors the income tax e-filing portal.
 
 ## What it does
 
-- **Questionnaire** picks the right form (ITR-1 vs ITR-2) with a deterministic rule engine.
-- **Document checklist** with step-by-step "how to fetch" instructions.
+- **Docs-first flow**: upload Form 16 / 26AS / AIS first; everything inferable is read from
+  them, and only the handful of form-critical facts no document can reveal are asked.
+- **Deterministic form selection** (ITR-1 vs ITR-2) from inferred fields + gap answers.
 - **Live document intelligence** (OpenAI): extracts every field with confidence scores,
   a self-critique feedback loop, and provenance.
 - **Cross-source reconciliation** (Form 16 vs 26AS vs AIS vs broker P&L).

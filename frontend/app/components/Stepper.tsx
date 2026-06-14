@@ -2,9 +2,8 @@
 
 export const STEPS = [
   "Start",
-  "Questionnaire",
-  "Documents",
   "Upload",
+  "Confirm",
   "Review",
   "Compute",
   "File",

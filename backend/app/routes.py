@@ -19,16 +19,15 @@ from ..agents.chat import answer_stream as chat_answer_stream
 from ..agents.doc_intel.extract import extract_document
 from ..agents.guidance import build_guided_filing, guidance_intro
 from ..agents.intake import (
-    QUESTIONNAIRE,
-    build_checklist,
-    build_profile,
-    resolve_unsure_flags,
+    GAP_QUESTIONS,
+    build_base_checklist,
+    build_profile_from_docs_and_gaps,
+    infer_profile_fields,
     select_form,
-    summarize_plan,
 )
 from ..agents.orchestrator import run_computation
 from ..agents.reconcile import reconcile_documents
-from ..compute.consolidate import consolidate
+from ..compute.consolidate import consolidate_detailed
 from ..schemas.compute import TaxInput
 from ..schemas.documents import DocType, DocumentExtraction
 
@@ -81,10 +80,10 @@ def create_session() -> dict:
     return {"session_id": store.create()}
 
 
-@router.get("/questionnaire")
-def get_questionnaire() -> dict:
-    """Return the predefined branching questionnaire."""
-    return {"sections": QUESTIONNAIRE}
+@router.get("/base-checklist")
+def get_base_checklist() -> dict:
+    """Return the docs-first upload checklist (mandatory + optional documents)."""
+    return {"checklist": [c.model_dump() for c in build_base_checklist()]}
 
 
 @router.post("/chat")
@@ -141,21 +140,76 @@ def get_state(session_id: str) -> dict:
     return store.get(session_id)
 
 
-@router.post("/session/{session_id}/intake")
-async def submit_intake(session_id: str, answers: dict = Body(...)) -> dict:
-    """Process questionnaire answers: pick form and build the checklist."""
-    _require(session_id)
-    profile = build_profile(answers)
-    decision = select_form(profile)
-    checklist = build_checklist(profile)
-    summary = await summarize_plan(profile, decision, checklist)
+_CG_SIGNAL_FIELDS = ("stcg_111a", "ltcg_112a", "stcg_other", "ltcg_other", "vda_gain")
 
-    payload = {
-        "profile": profile.model_dump(),
-        "decision": decision.model_dump(),
-        "checklist": [c.model_dump() for c in checklist],
-        "summary": summary,
+
+@router.post("/session/{session_id}/analyze-gaps")
+async def analyze_gaps(session_id: str) -> dict:
+    """Infer everything possible from documents; return only the unanswerable gaps.
+
+    Consolidates the uploaded documents, derives every profile flag the
+    documents reveal (income heads, regime, capital-gains signals), and returns
+    the minimal set of questions that genuinely cannot be read from any document
+    along with a friendly summary of what was inferred and any optional doc the
+    AIS suggests is missing.
+    """
+    _require(session_id)
+    state = store.get(session_id)
+    docs = _flatten_docs(state)
+    age = int(state.get("profile", {}).get("age", 30))
+    ti, discrepancies = consolidate_detailed(docs, age=age)
+
+    inferred = infer_profile_fields(ti)
+    store.update(session_id, {
+        "tax_input": ti.model_dump(),
+        "discrepancies": [d.model_dump() for d in discrepancies],
+        "inferred_profile": inferred,
+    })
+
+    summary: list[str] = []
+    gross = sum(s.gross_salary for s in ti.salaries)
+    if gross:
+        summary.append(f"Salary: \u20b9{gross:,.0f} across {len(ti.salaries)} employer(s)")
+    summary.append(f"Filing regime (from Form 16): {ti.filing_regime.upper()}")
+    if ti.tds_total:
+        summary.append(f"TDS / taxes paid: \u20b9{ti.tds_total:,.0f}")
+    if inferred.get("has_savings_interest") or inferred.get("has_fd_interest"):
+        summary.append("Interest income detected")
+    if inferred.get("has_dividends"):
+        summary.append("Dividend income detected")
+    if inferred.get("has_capital_gains"):
+        summary.append("Capital-gains activity detected")
+
+    suggested: list[dict] = []
+    has_cg = any(getattr(ti.capital_gains, f) for f in _CG_SIGNAL_FIELDS)
+    if has_cg and "broker_pnl" not in state.get("documents", {}):
+        suggested.append({
+            "doc_type": "broker_pnl",
+            "title": "Broker Tax P&L",
+            "why": "Your AIS shows securities activity. Upload it for an accurate "
+                   "short/long-term split, or confirm the figures on the next screen."})
+
+    return {
+        "regime": ti.filing_regime,
+        "inferred": summary,
+        "gap_questions": GAP_QUESTIONS,
+        "suggested_docs": suggested,
     }
+
+
+@router.post("/session/{session_id}/submit-gaps")
+async def submit_gaps(session_id: str, answers: dict = Body(...)) -> dict:
+    """Build the profile from inferred fields + gap answers and select the form."""
+    _require(session_id)
+    state = store.get(session_id)
+    if state.get("tax_input"):
+        ti = TaxInput(**state["tax_input"])
+    else:
+        ti, _ = consolidate_detailed(_flatten_docs(state), age=int(answers.get("age", 30)))
+
+    profile = build_profile_from_docs_and_gaps(ti, answers)
+    decision = select_form(profile)
+    payload = {"profile": profile.model_dump(), "decision": decision.model_dump()}
     store.update(session_id, payload)
     return payload
 
@@ -264,36 +318,64 @@ async def run_reconcile(session_id: str) -> dict:
     return payload["reconciliation"]
 
 
+def _consolidate_from_docs(session_id: str, state: dict) -> dict:
+    """Consolidate documents into a prefilled, editable ``TaxInput`` for review.
+
+    Builds the canonical input and surfaces cross-source discrepancies. The
+    result is persisted as the ``tax_input`` the review screen lets the user
+    override; profile/form selection happens earlier in the gap step.
+    """
+    docs = _flatten_docs(state)
+    age = int(state.get("profile", {}).get("age", 30))
+    ti, discrepancies = consolidate_detailed(docs, age=age)
+    payload = {
+        "tax_input": ti.model_dump(),
+        "discrepancies": [d.model_dump() for d in discrepancies],
+    }
+    store.update(session_id, payload)
+    return payload
+
+
+@router.post("/session/{session_id}/consolidate")
+def consolidate_review(session_id: str) -> dict:
+    """Build the prefilled, editable consolidated input and its discrepancies."""
+    _require(session_id)
+    return _consolidate_from_docs(session_id, store.get(session_id))
+
+
+@router.put("/session/{session_id}/tax-input")
+def override_tax_input(session_id: str, payload: dict = Body(...)) -> dict:
+    """Persist user overrides to the consolidated input (docs are prefill only).
+
+    The full edited ``TaxInput`` is sent back and stored verbatim, so any value
+    the user changed on the review screen wins over the document-derived value.
+    """
+    _require(session_id)
+    ti = TaxInput(**payload)
+    store.update(session_id, {"tax_input": ti.model_dump()})
+    return ti.model_dump()
+
+
 @router.post("/session/{session_id}/compute")
 async def compute(session_id: str) -> dict:
-    """Consolidate documents and run the streamed computation pipeline."""
+    """Run the streamed computation, honouring any user-edited consolidated input."""
     _require(session_id)
     state = store.get(session_id)
-    docs = _flatten_docs(state)
+
+    # Use the (possibly user-overridden) consolidated input if the review step
+    # produced one; otherwise consolidate fresh from documents now.
+    if not state.get("tax_input"):
+        _consolidate_from_docs(session_id, state)
+        state = store.get(session_id)
+
+    ti = TaxInput(**state["tax_input"])
     profile = UserProfile(**state.get("profile", {}))
     form = ITRForm(state.get("decision", {}).get("form", ITRForm.ITR2.value))
 
-    ti: TaxInput = consolidate(docs, age=profile.age)
-
-    extra: dict = {}
-    if profile.unsure_fields:
-        notes = resolve_unsure_flags(profile, ti)
-        decision = select_form(profile)
-        checklist = build_checklist(profile)
-        for note in notes:
-            await bus.emit(session_id, EventType.AGENT_STEP,
-                           f"Resolved from documents: {note}")
-        extra = {
-            "profile": profile.model_dump(),
-            "decision": decision.model_dump(),
-            "checklist": [c.model_dump() for c in checklist],
-        }
-        form = decision.form
-
     result = await run_computation(session_id, ti, form, profile)
 
-    store.update(session_id, {"tax_input": ti.model_dump(), **extra, **result})
-    return {"tax_input": ti.model_dump(), **extra, **result}
+    store.update(session_id, {"tax_input": ti.model_dump(), **result})
+    return {"tax_input": ti.model_dump(), **result}
 
 
 @router.get("/session/{session_id}/guidance")

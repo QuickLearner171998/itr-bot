@@ -7,7 +7,7 @@ comparison, rebate boundaries, and the independent re-computation check.
 
 from __future__ import annotations
 
-from backend.compute.consolidate import consolidate
+from backend.compute.consolidate import consolidate, consolidate_detailed
 from backend.compute.engine import compute_regime, compute_taxes
 from backend.compute.recompute import verify
 from backend.compute.validators import validate_final_return
@@ -146,6 +146,74 @@ def test_consolidate_merges_documents():
     assert ti.tds_total == 60000
     assert ti.capital_gains.ltcg_112a == 300000
     assert ti.deductions.amount_80c == 150000
+
+
+def test_hra_not_double_counted_when_employer_already_exempted():
+    # Form 16 already exempts allowances (employer gave HRA). A rent receipt
+    # must NOT be recomputed on top, else the exemption is double-counted.
+    docs = [
+        DocumentExtraction(doc_type=DocType.FORM16, filename="f16.pdf", fields=[
+            ExtractedField(name="gross_salary", label="Gross", value=1500000, confidence=0.95),
+            ExtractedField(name="exempt_allowances", label="Exempt", value=200000, confidence=0.95),
+        ]),
+        DocumentExtraction(doc_type=DocType.RENT_RECEIPT, filename="rent.pdf", fields=[
+            ExtractedField(name="hra_received", label="HRA", value=200000, confidence=0.9),
+            ExtractedField(name="rent_paid", label="Rent", value=300000, confidence=0.9),
+            ExtractedField(name="basic_da", label="Basic", value=900000, confidence=0.9),
+        ]),
+    ]
+    ti = consolidate(docs, age=30)
+    assert ti.hra_received == 0.0  # not recomputed; employer exemption stands
+    res = compute_regime(ti, "old")
+    exempt = next(s for s in res.steps if s.key == "exempt")
+    assert round(exempt.amount) == 200000  # only the Form 16 exemption, not doubled
+
+
+def test_hra_computed_when_employer_gave_no_exemption():
+    # No employer exempt allowance -> rent receipt HRA is claimed at filing.
+    docs = [
+        DocumentExtraction(doc_type=DocType.FORM16, filename="f16.pdf", fields=[
+            ExtractedField(name="gross_salary", label="Gross", value=1500000, confidence=0.95),
+        ]),
+        DocumentExtraction(doc_type=DocType.RENT_RECEIPT, filename="rent.pdf", fields=[
+            ExtractedField(name="hra_received", label="HRA", value=200000, confidence=0.9),
+            ExtractedField(name="rent_paid", label="Rent", value=300000, confidence=0.9),
+            ExtractedField(name="basic_da", label="Basic", value=900000, confidence=0.9),
+        ]),
+    ]
+    ti = consolidate(docs, age=30)
+    assert ti.hra_received == 200000.0
+
+
+def test_consolidate_flags_cross_source_discrepancy():
+    # Interest certificate and AIS report different savings interest -> flagged,
+    # and the larger (safe) value is chosen as the prefill.
+    docs = [
+        DocumentExtraction(doc_type=DocType.INTEREST_CERT, filename="cert.pdf", fields=[
+            ExtractedField(name="savings_interest", label="Savings", value=8000, confidence=0.9),
+        ]),
+        DocumentExtraction(doc_type=DocType.AIS, filename="ais.pdf", fields=[
+            ExtractedField(name="savings_interest", label="Savings", value=11000, confidence=0.9),
+        ]),
+    ]
+    ti, discrepancies = consolidate_detailed(docs, age=30)
+    assert ti.savings_interest == 11000
+    flagged = next(d for d in discrepancies if d.field == "savings_interest")
+    assert flagged.chosen == 11000
+    assert len(flagged.sources) == 2
+
+
+def test_consolidate_no_discrepancy_when_sources_agree():
+    docs = [
+        DocumentExtraction(doc_type=DocType.INTEREST_CERT, filename="cert.pdf", fields=[
+            ExtractedField(name="savings_interest", label="Savings", value=8000, confidence=0.9),
+        ]),
+        DocumentExtraction(doc_type=DocType.AIS, filename="ais.pdf", fields=[
+            ExtractedField(name="savings_interest", label="Savings", value=8000, confidence=0.9),
+        ]),
+    ]
+    _, discrepancies = consolidate_detailed(docs, age=30)
+    assert not any(d.field == "savings_interest" for d in discrepancies)
 
 
 def test_final_validation_blocks_itr1_with_stcg():

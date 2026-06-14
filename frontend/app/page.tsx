@@ -3,14 +3,14 @@
 import { useEffect, useState } from "react";
 import { api } from "./lib/api";
 import { AgentPanel } from "./components/AgentPanel";
-import { Checklist } from "./components/Checklist";
+import { ConfirmDetails } from "./components/ConfirmDetails";
 import { Guided } from "./components/Guided";
-import { Questionnaire } from "./components/Questionnaire";
 import { Reconcile } from "./components/Reconcile";
 import { Results } from "./components/Results";
 import { Stepper } from "./components/Stepper";
 import { Upload } from "./components/Upload";
 import { useSession } from "./lib/session";
+import type { ChecklistItem } from "./lib/types";
 
 const RESUME_KEY = "itr_session_resume";
 
@@ -37,6 +37,7 @@ export default function Home() {
   const { sessionId, start, restoreSession } = useSession();
   const [step, setStep] = useState(0);
   const [intake, setIntake] = useState<any>(null);
+  const [checklist, setChecklist] = useState<ChecklistItem[]>([]);
   const [starting, setStarting] = useState(false);
   const [resumePrompt, setResumePrompt] = useState<{ sessionId: string; step: number; intake: any } | null>(null);
 
@@ -48,6 +49,13 @@ export default function Home() {
       .then(() => setResumePrompt(saved))
       .catch(() => clearResume());
   }, []);
+
+  // Load the docs-first base checklist once a session is active.
+  useEffect(() => {
+    if (sessionId && checklist.length === 0) {
+      api.getBaseChecklist().then((r) => setChecklist(r.checklist || []));
+    }
+  }, [sessionId, checklist.length]);
 
   // Persist whenever step / intake changes (after a session is active).
   useEffect(() => {
@@ -92,7 +100,7 @@ export default function Home() {
 
           {resumePrompt && (
             <div className="resume-banner">
-              <span>You have a session in progress (step {resumePrompt.step} of 6).</span>
+              <span>You have a session in progress (step {resumePrompt.step} of 5).</span>
               <div className="resume-actions">
                 <button className="btn" onClick={resume}>Resume where I left off</button>
                 <button className="btn ghost" onClick={startFresh}>Start fresh</button>
@@ -129,45 +137,36 @@ export default function Home() {
     );
   }
 
-  const showPanel = step >= 3;
+  const showPanel = step >= 1 && step <= 4;
 
   const content = (() => {
     switch (step) {
       case 1:
         return (
-          <Questionnaire
+          <Upload
+            checklist={checklist}
             sessionId={sessionId}
-            onDone={(r) => {
-              setIntake(r);
-              navigate(2);
-            }}
+            onBack={() => navigate(0)}
+            onNext={() => navigate(2)}
           />
         );
       case 2:
         return (
-          <Checklist
-            decision={intake.decision}
-            checklist={intake.checklist}
-            summary={intake.summary}
+          <ConfirmDetails
+            sessionId={sessionId}
             onBack={() => navigate(1)}
-            onNext={() => navigate(3)}
+            onNext={(decision) => {
+              setIntake({ decision });
+              navigate(3);
+            }}
           />
         );
       case 3:
-        return (
-          <Upload
-            checklist={intake.checklist}
-            sessionId={sessionId}
-            onBack={() => navigate(2)}
-            onNext={() => navigate(4)}
-          />
-        );
+        return <Reconcile sessionId={sessionId} onBack={() => navigate(2)} onNext={() => navigate(4)} />;
       case 4:
-        return <Reconcile sessionId={sessionId} onBack={() => navigate(3)} onNext={() => navigate(5)} />;
+        return <Results sessionId={sessionId} onBack={() => navigate(3)} onNext={() => navigate(5)} />;
       case 5:
-        return <Results sessionId={sessionId} onBack={() => navigate(4)} onNext={() => navigate(6)} />;
-      case 6:
-        return <Guided sessionId={sessionId} onBack={() => navigate(5)} />;
+        return <Guided sessionId={sessionId} onBack={() => navigate(4)} />;
       default:
         return null;
     }

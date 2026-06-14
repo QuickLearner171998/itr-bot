@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from ..app.config import settings
 from ..schemas.documents import DocType
 from ..schemas.profile import (
     ChecklistItem,
@@ -17,75 +16,34 @@ from ..schemas.profile import (
     ITRForm,
     UserProfile,
 )
-from .llm import build_agent, run_agent
 
-# --- Predefined branching questionnaire -------------------------------------
-# Each question id matches a UserProfile field so answers map directly.
-QUESTIONNAIRE: list[dict] = [
-    {"section": "About you", "questions": [
-        {"id": "age", "text": "Your age", "type": "number", "default": 30,
-         "help": "Determines senior-citizen benefits under the old regime."},
-        {"id": "residential_status", "text": "Residential status", "type": "choice",
-         "options": ["resident", "rnor", "non_resident"], "default": "resident",
-         "help": "Non-residents and RNOR cannot use ITR-1."},
-    ]},
-    {"section": "Salary", "questions": [
-        {"id": "changed_jobs", "text": "Did you change jobs during FY 2025-26?", "type": "bool",
-         "help": "If yes, you will have multiple Form 16s to combine."},
-        {"id": "num_employers", "text": "How many employers did you have?", "type": "number",
-         "default": 1, "depends_on": "changed_jobs"},
-        {"id": "total_income_above_50l", "text": "Is your total income above 50 lakh?", "type": "bool",
-         "help": "Above 50 lakh forces ITR-2."},
-    ]},
-    {"section": "House property", "questions": [
-        {"id": "num_house_properties", "text": "How many house properties do you own?",
-         "type": "number", "default": 0},
-        {"id": "has_home_loan", "text": "Do you have a home loan?", "type": "bool",
-         "extractable": True},
-        {"id": "has_let_out_property", "text": "Is any property let out (rented)?", "type": "bool",
-         "depends_on": "num_house_properties"},
-    ]},
-    {"section": "Investments & capital gains", "questions": [
-        {"id": "has_capital_gains", "text": "Did you sell shares, mutual funds, property or crypto?",
-         "type": "bool", "extractable": True},
-        {"id": "has_stcg", "text": "Any short-term capital gains?", "type": "bool",
-         "depends_on": "has_capital_gains", "extractable": True},
-        {"id": "ltcg_112a_above_125k", "text": "Are long-term equity gains above 1.25 lakh?",
-         "type": "bool", "depends_on": "has_capital_gains", "extractable": True},
-        {"id": "has_crypto_vda", "text": "Any crypto / virtual digital asset gains?", "type": "bool",
-         "depends_on": "has_capital_gains", "extractable": True},
-        {"id": "has_rsu_esop", "text": "Do you hold RSUs / ESOPs?", "type": "bool"},
-        {"id": "has_unlisted_shares", "text": "Do you hold unlisted shares?", "type": "bool"},
-    ]},
-    {"section": "Other income", "questions": [
-        {"id": "has_savings_interest", "text": "Savings bank interest?", "type": "bool",
-         "extractable": True},
-        {"id": "has_fd_interest", "text": "Fixed/recurring deposit interest?", "type": "bool",
-         "extractable": True},
-        {"id": "has_dividends", "text": "Dividend income?", "type": "bool", "extractable": True},
-    ]},
-    {"section": "Deductions & retirement", "questions": [
-        {"id": "has_pf", "text": "Do you contribute to EPF/PF?", "type": "bool"},
-        {"id": "has_nps", "text": "Do you contribute to NPS (self)?", "type": "bool",
-         "extractable": True},
-        {"id": "has_employer_nps", "text": "Does your employer contribute to NPS?", "type": "bool",
-         "extractable": True},
-        {"id": "claims_80c", "text": "Do you claim 80C (PPF, ELSS, LIC, etc.)?", "type": "bool",
-         "extractable": True},
-        {"id": "claims_80d", "text": "Do you claim 80D (health insurance)?", "type": "bool",
-         "extractable": True},
-    ]},
-    {"section": "Other flags", "questions": [
-        {"id": "is_company_director", "text": "Are you a director in any company?", "type": "bool"},
-        {"id": "has_foreign_assets_income", "text": "Any foreign assets or foreign income?", "type": "bool"},
-        {"id": "has_brought_forward_losses", "text": "Any brought-forward losses to carry?", "type": "bool"},
-        {"id": "agricultural_income_above_5k", "text": "Agricultural income above 5,000?", "type": "bool"},
-    ]},
+# --- Gap questions ----------------------------------------------------------
+# Only the things that genuinely CANNOT be read from Form 16 / AIS / 26AS, and
+# that affect ITR-1 vs ITR-2 eligibility. Everything else is inferred from the
+# uploaded documents to keep manual effort minimal. Bool toggles default off so
+# a typical filer confirms in a single click.
+GAP_QUESTIONS: list[dict] = [
+    {"id": "age", "text": "Your age", "type": "number", "default": 30,
+     "help": "Determines senior-citizen benefits under the old regime."},
+    {"id": "residential_status", "text": "Residential status", "type": "choice",
+     "options": ["resident", "rnor", "non_resident"], "default": "resident",
+     "help": "Non-residents and RNOR cannot use ITR-1."},
+    {"id": "num_house_properties", "text": "How many house properties do you own?",
+     "type": "number", "default": 0,
+     "help": "More than two properties requires ITR-2."},
+    {"id": "has_unlisted_shares", "text": "Do you hold unlisted shares?", "type": "bool"},
+    {"id": "has_rsu_esop", "text": "Do you hold RSUs / ESOPs?", "type": "bool"},
+    {"id": "is_company_director", "text": "Are you a director in any company?", "type": "bool"},
+    {"id": "has_foreign_assets_income", "text": "Any foreign assets or foreign income?",
+     "type": "bool"},
+    {"id": "has_brought_forward_losses", "text": "Any brought-forward losses to carry?",
+     "type": "bool"},
+    {"id": "agricultural_income_above_5k", "text": "Agricultural income above 5,000?",
+     "type": "bool"},
 ]
 
 
-# Sentinel a bool question carries when the user answers "not sure". Such fields
-# are left at their default and recorded so documents resolve them later.
+# Sentinel a bool answer carries when the user is "not sure".
 UNSURE = "unsure"
 
 
@@ -158,6 +116,48 @@ def resolve_unsure_flags(profile: UserProfile, ti: TaxInput) -> list[str]:
         notes.append(f"{field} = {value} (from documents)")
     profile.unsure_fields = remaining
     return notes
+
+
+# Income heads summed for the 50-lakh ITR-2 threshold.
+def _total_income(ti) -> float:
+    cg = ti.capital_gains
+    return (sum(s.gross_salary for s in ti.salaries)
+            + ti.savings_interest + ti.fd_interest + ti.dividend
+            + ti.family_pension + ti.other_income + ti.let_out_annual_rent
+            + cg.stcg_111a + cg.ltcg_112a + cg.stcg_other + cg.ltcg_other + cg.vda_gain)
+
+
+def infer_profile_fields(ti) -> dict:
+    """Infer every document-derivable profile flag from the consolidated input.
+
+    Reuses the same predicates that resolve "not sure" answers, plus the
+    salary-count and 50-lakh threshold derivations, so the user is never asked
+    anything the documents already answer.
+
+    Args:
+        ti: Consolidated ``TaxInput`` built from uploaded documents.
+
+    Returns:
+        Mapping of profile field names to inferred values.
+    """
+    fields: dict = {flag: bool(pred(ti)) for flag, pred in _UNSURE_RESOLVERS.items()}
+    fields["total_income_above_50l"] = _total_income(ti) > 5_000_000
+    n = len(ti.salaries)
+    if n:
+        fields["num_employers"] = n
+        fields["changed_jobs"] = n > 1
+    return fields
+
+
+def build_profile_from_docs_and_gaps(ti, gap_answers: dict) -> UserProfile:
+    """Combine document-inferred fields with the user's gap answers.
+
+    Gap answers (the un-inferable, form-critical questions) take precedence over
+    inference. Returns a fully populated ``UserProfile`` for form selection.
+    """
+    merged = dict(infer_profile_fields(ti))
+    merged.update({k: v for k, v in gap_answers.items() if v != UNSURE})
+    return build_profile(merged)
 
 
 def select_form(profile: UserProfile) -> FormDecision:
@@ -281,48 +281,22 @@ _HOW_TO: dict[str, ChecklistItem] = {
 }
 
 
-def build_checklist(profile: UserProfile) -> list[ChecklistItem]:
-    """Build the per-user document checklist from the profile.
+# Optional doc types offered up front (beyond the three mandatory ones), so the
+# filer can drop everything in one place without first answering a questionnaire.
+_BASE_OPTIONAL = [
+    DocType.INTEREST_CERT, DocType.BROKER_PNL, DocType.HOME_LOAN_CERT,
+    DocType.DEDUCTION_PROOF, DocType.FORM16A, DocType.RENT_RECEIPT, DocType.DONATION_80G,
+]
 
-    Args:
-        profile: The user profile.
 
-    Returns:
-        Ordered list of required/optional documents with how-to-get steps.
+def build_base_checklist() -> list[ChecklistItem]:
+    """Document checklist shown before any questionnaire (docs-first flow).
+
+    Form 16, Form 26AS and AIS are the mandatory backbone; the rest are optional
+    and only matter if the filer has that income/deduction. Inference and the
+    review step decide what (if anything) is still needed.
     """
-    items = [_HOW_TO[DocType.FORM16.value], _HOW_TO[DocType.FORM26AS.value],
-             _HOW_TO[DocType.AIS.value]]
-
-    if profile.has_savings_interest or profile.has_fd_interest:
-        items.append(_HOW_TO[DocType.INTEREST_CERT.value])
-    if profile.has_capital_gains or profile.has_crypto_vda or profile.has_rsu_esop:
-        items.append(_HOW_TO[DocType.BROKER_PNL.value])
-    if profile.has_home_loan or profile.num_house_properties > 0:
-        items.append(_HOW_TO[DocType.HOME_LOAN_CERT.value])
-    if profile.claims_80c or profile.claims_80d or profile.has_nps:
-        items.append(_HOW_TO[DocType.DEDUCTION_PROOF.value])
-    if profile.has_fd_interest or profile.has_dividends:
-        items.append(_HOW_TO[DocType.FORM16A.value])
-    # HRA/rent and donations apply broadly; offer them as optional.
-    items.append(_HOW_TO[DocType.RENT_RECEIPT.value])
-    items.append(_HOW_TO[DocType.DONATION_80G.value])
-    return items
-
-
-async def summarize_plan(profile: UserProfile, decision: FormDecision,
-                         checklist: list[ChecklistItem]) -> str:
-    """Use an ADK agent to write a short, friendly summary of the filing plan."""
-    agent = build_agent(
-        name="intake_assistant",
-        model_id=settings.orchestration_model,
-        instruction=(
-            "You are a friendly Indian tax assistant. Given a user's profile, the "
-            "selected ITR form with reasons, and a document checklist, write a short "
-            "(3-4 sentence) plain-English summary of what the user needs to do next. "
-            "Be encouraging and specific. Do not invent facts."))
-    docs = ", ".join(c.title for c in checklist)
-    prompt = (
-        f"Selected form: {decision.form.value}. Reasons: {'; '.join(decision.reasons)}. "
-        f"Documents to gather: {docs}. Profile flags: changed_jobs={profile.changed_jobs}, "
-        f"capital_gains={profile.has_capital_gains}, home_loan={profile.has_home_loan}.")
-    return await run_agent(agent, prompt)
+    base = [_HOW_TO[DocType.FORM16.value], _HOW_TO[DocType.FORM26AS.value],
+            _HOW_TO[DocType.AIS.value]]
+    base.extend(_HOW_TO[dt.value] for dt in _BASE_OPTIONAL)
+    return base

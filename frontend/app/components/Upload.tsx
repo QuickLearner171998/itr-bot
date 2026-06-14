@@ -146,7 +146,13 @@ function DocTypeSection({
   const isMulti = MULTI_UPLOAD_TYPES.has(item.doc_type);
   const needsPassword = item.doc_type === "ais";
   const [open, setOpen] = useState(item.required);
-  const [password, setPassword] = useState("");
+  // AIS PDFs are encrypted with PAN (uppercase) + DOB as ddmmyyyy.
+  const [pan, setPan] = useState("");
+  const [dob, setDob] = useState(""); // yyyy-mm-dd from the date picker
+  const aisPassword =
+    needsPassword && pan.trim() && dob
+      ? pan.trim().toUpperCase() + dob.split("-").reverse().join("")
+      : undefined;
 
   const live = uploads.map((u) => liveDocs[u.uploadId]);
   const doneCount = live.filter((l) => l?.extraction).length;
@@ -211,11 +217,13 @@ function DocTypeSection({
               required={item.required}
               source={item.source}
               needsPassword={needsPassword}
-              password={password}
-              onPassword={setPassword}
+              pan={pan}
+              dob={dob}
+              onPan={setPan}
+              onDob={setDob}
               hasUploads={uploads.length > 0}
               title={item.title}
-              onFiles={(files) => onFiles(files, password || undefined)}
+              onFiles={(files) => onFiles(files, aisPassword)}
             />
           )}
         </div>
@@ -367,8 +375,10 @@ function Dropzone({
   required,
   source,
   needsPassword,
-  password,
-  onPassword,
+  pan,
+  dob,
+  onPan,
+  onDob,
   hasUploads,
   title,
   onFiles,
@@ -377,8 +387,10 @@ function Dropzone({
   required: boolean;
   source: string;
   needsPassword: boolean;
-  password: string;
-  onPassword: (v: string) => void;
+  pan: string;
+  dob: string;
+  onPan: (v: string) => void;
+  onDob: (v: string) => void;
   hasUploads: boolean;
   title: string;
   onFiles: (files: File[]) => void;
@@ -394,13 +406,28 @@ function Dropzone({
   return (
     <>
       {needsPassword && (
-        <input
-          className="field"
-          style={{ width: "100%", marginBottom: 8 }}
-          placeholder="AIS PDF password (PAN + DOB, e.g. ABCDE1234F01011990)"
-          value={password}
-          onChange={(e) => onPassword(e.target.value)}
-        />
+        <div className="ais-pass">
+          <p className="ais-pass-hint">
+            The AIS PDF is password-protected. Enter your PAN and date of birth and we&apos;ll
+            unlock it automatically (password = PAN + DDMMYYYY).
+          </p>
+          <div className="ais-pass-row">
+            <input
+              className="field"
+              placeholder="PAN (e.g. ABCDE1234F)"
+              maxLength={10}
+              value={pan}
+              onChange={(e) => onPan(e.target.value.toUpperCase())}
+            />
+            <input
+              className="field"
+              type="date"
+              aria-label="Date of birth"
+              value={dob}
+              onChange={(e) => onDob(e.target.value)}
+            />
+          </div>
+        </div>
       )}
       <div
         className={`dropzone ${dragging ? "dragging" : ""}`}

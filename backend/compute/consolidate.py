@@ -11,10 +11,14 @@ from __future__ import annotations
 from ..schemas.compute import (
     CapitalGains,
     Deductions,
+    Discrepancy,
     SalaryComponent,
     TaxInput,
 )
-from ..schemas.documents import DocType, DocumentExtraction
+from ..schemas.documents import DOC_REGISTRY, DocType, DocumentExtraction
+
+# Two source figures differing by more than this (rupees) raise a discrepancy.
+_DISCREPANCY_TOLERANCE = 1.0
 
 
 def _num(value: object) -> float:
@@ -32,16 +36,64 @@ def _yes(value: object) -> bool:
     return str(value or "").strip().lower().startswith(("y", "t"))
 
 
+def _doc_title(doc_type: DocType) -> str:
+    """Human-readable title for a doc type (falls back to the enum value)."""
+    spec = DOC_REGISTRY.get(doc_type)
+    return spec.title if spec else doc_type.value
+
+
+def _pick(
+    discrepancies: list[Discrepancy], field: str, label: str,
+    candidates: list[tuple[DocType, float]],
+) -> float:
+    """Choose the safe (largest) figure and record a discrepancy if sources differ.
+
+    Args:
+        discrepancies: Accumulator the discrepancy is appended to when found.
+        field: Logical ``TaxInput`` key.
+        label: Human-readable field name.
+        candidates: ``(doc_type, value)`` pairs from each reporting source.
+
+    Returns:
+        The chosen (largest) value; 0.0 when no source reports it.
+    """
+    reported = [(dt, v) for dt, v in candidates if v > 0]
+    if not reported:
+        return 0.0
+    chosen = max(v for _, v in reported)
+    spread = chosen - min(v for _, v in reported)
+    if len(reported) > 1 and spread > _DISCREPANCY_TOLERANCE:
+        discrepancies.append(Discrepancy(
+            field=field, label=label, chosen=chosen,
+            sources=[{"doc": _doc_title(dt), "value": v} for dt, v in reported],
+            note="Sources disagree; confirm or override the value."))
+    return chosen
+
+
 def consolidate(docs: list[DocumentExtraction], age: int = 30) -> TaxInput:
-    """Build a ``TaxInput`` from a list of extracted documents.
+    """Build a consolidated ``TaxInput`` (see :func:`consolidate_detailed`)."""
+    ti, _ = consolidate_detailed(docs, age)
+    return ti
+
+
+def consolidate_detailed(
+    docs: list[DocumentExtraction], age: int = 30
+) -> tuple[TaxInput, list[Discrepancy]]:
+    """Build a ``TaxInput`` and a list of cross-source discrepancies.
+
+    Where multiple documents report the same figure, the larger value is chosen
+    as a safe prefill (nothing under-reported) but any disagreement is recorded
+    as a :class:`Discrepancy` so the user can confirm or override it rather than
+    the system silently assuming.
 
     Args:
         docs: Validated document extractions.
         age: Taxpayer age (drives senior-citizen rules downstream).
 
     Returns:
-        Consolidated, regime-agnostic tax input.
+        ``(tax_input, discrepancies)``.
     """
+    discrepancies: list[Discrepancy] = []
     by_type: dict[DocType, list[dict[str, object]]] = {}
     for doc in docs:
         by_type.setdefault(doc.doc_type, []).append(doc.values())
@@ -112,12 +164,20 @@ def consolidate(docs: list[DocumentExtraction], age: int = 30) -> TaxInput:
         ti.let_out_annual_rent = let_out_rent
         ti.let_out_municipal_taxes = municipal_taxes
 
-    # HRA exemption inputs (rent receipt).
-    for v in by_type.get(DocType.RENT_RECEIPT, []):
-        ti.hra_received = max(ti.hra_received, _num(v.get("hra_received")))
-        ti.hra_rent_paid = max(ti.hra_rent_paid, _num(v.get("rent_paid")))
-        ti.hra_basic_da = max(ti.hra_basic_da, _num(v.get("basic_da")))
-        ti.hra_is_metro = ti.hra_is_metro or _yes(v.get("is_metro"))
+    # HRA exemption inputs (rent receipt). Section 10(13A) exemption must be
+    # counted exactly once. If the employer already granted Section 10
+    # exemptions in Form 16 (``exempt_allowances`` > 0), HRA is treated as
+    # already netted there and we do NOT recompute it from the rent receipt --
+    # otherwise the exemption would be deducted twice and tax under-stated. HRA
+    # is recomputed from the receipt only when the employer granted nothing
+    # (i.e. the filer is claiming it for the first time at filing).
+    employer_exempt = sum(s.exempt_allowances for s in ti.salaries)
+    if employer_exempt <= 0:
+        for v in by_type.get(DocType.RENT_RECEIPT, []):
+            ti.hra_received = max(ti.hra_received, _num(v.get("hra_received")))
+            ti.hra_rent_paid = max(ti.hra_rent_paid, _num(v.get("rent_paid")))
+            ti.hra_basic_da = max(ti.hra_basic_da, _num(v.get("basic_da")))
+            ti.hra_is_metro = ti.hra_is_metro or _yes(v.get("is_metro"))
 
     ti.deductions = Deductions(
         amount_80c=max(f16_80c, proof_80c, home_principal),
@@ -142,18 +202,23 @@ def consolidate(docs: list[DocumentExtraction], age: int = 30) -> TaxInput:
         donation_50_limit=don_50_l,
     )
 
-    # Other-source income: take the larger of certificate vs AIS.
+    # Other-source income: prefer the larger of certificate vs AIS, flag mismatch.
     cert_savings = cert_fd = 0.0
     for v in by_type.get(DocType.INTEREST_CERT, []):
         cert_savings += _num(v.get("savings_interest"))
         cert_fd += _num(v.get("fd_interest"))
     ais = by_type.get(DocType.AIS, [{}])[0] if by_type.get(DocType.AIS) else {}
-    ti.savings_interest = max(cert_savings, _num(ais.get("savings_interest")))
-    ti.fd_interest = max(cert_fd, _num(ais.get("fd_interest")))
+    ti.savings_interest = _pick(discrepancies, "savings_interest", "Savings Interest", [
+        (DocType.INTEREST_CERT, cert_savings),
+        (DocType.AIS, _num(ais.get("savings_interest")))])
+    ti.fd_interest = _pick(discrepancies, "fd_interest", "FD/RD Interest", [
+        (DocType.INTEREST_CERT, cert_fd),
+        (DocType.AIS, _num(ais.get("fd_interest")))])
 
-    # Dividend: max of broker total and AIS.
     broker_dividend = sum(_num(v.get("dividend")) for v in by_type.get(DocType.BROKER_PNL, []))
-    ti.dividend = max(broker_dividend, _num(ais.get("dividend")))
+    ti.dividend = _pick(discrepancies, "dividend", "Dividend", [
+        (DocType.BROKER_PNL, broker_dividend),
+        (DocType.AIS, _num(ais.get("dividend")))])
     ti.family_pension = _num(ais.get("family_pension"))
 
     # Capital gains: sum across brokers.
@@ -174,8 +239,10 @@ def consolidate(docs: list[DocumentExtraction], age: int = 30) -> TaxInput:
         + sum(_num(v.get("tds")) for v in by_type.get(DocType.INTEREST_CERT, []))
     )
     tds_26as = _num(f26.get("total_tds_salary")) + _num(f26.get("total_tds_other"))
-    ti.tds_total = max(tds_individual, tds_26as)
+    ti.tds_total = _pick(discrepancies, "tds_total", "Total TDS", [
+        (DocType.FORM16, tds_individual),
+        (DocType.FORM26AS, tds_26as)])
     ti.advance_tax = _num(f26.get("advance_tax"))
     ti.self_assessment_tax = _num(f26.get("self_assessment_tax"))
 
-    return ti
+    return ti, discrepancies

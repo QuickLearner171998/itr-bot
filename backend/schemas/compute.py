@@ -102,6 +102,21 @@ class TaxInput(BaseModel):
     relief_90_91: float = 0.0    # foreign tax credit (DTAA / unilateral)
 
 
+class Discrepancy(BaseModel):
+    """A figure that two source documents report differently.
+
+    Surfaced to the user for confirmation instead of silently picking a value;
+    ``chosen`` is the safe prefill (the larger figure to avoid under-reporting)
+    but the user may override it on the review screen.
+    """
+
+    field: str                       # logical TaxInput key (e.g. "tds_total")
+    label: str                       # human-readable field name
+    sources: list[dict] = Field(default_factory=list)  # [{"doc","value"}]
+    chosen: float = 0.0              # prefilled value
+    note: str = ""
+
+
 class ComputeStep(BaseModel):
     """One labelled line in the income-to-tax trace (drives the waterfall)."""
 
