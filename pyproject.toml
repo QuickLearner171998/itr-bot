@@ -1,0 +1,26 @@
+[project]
+name = "itr-bot"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "google-adk>=2.0.0",
+    "litellm>=1.70.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.3.0",
+    "python-multipart>=0.0.9",
+    "pypdf>=4.2.0",
+    "pdf2image>=1.17.0",
+    "pillow>=10.3.0",
+    "python-dotenv>=1.0.1",
+    "sse-starlette>=2.1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2.0",
+]
+
+[tool.uv]
+package = false

@@ -38,8 +38,11 @@ frontend/  Next.js (App Router, TypeScript) wizard UI + live panels
 ## Prerequisites
 
 - **Python 3.14**
+- **[uv](https://docs.astral.sh/uv/getting-started/installation/)** (Python package manager)
 - **Node.js 18+** (tested on Node 25)
 - An **OpenAI API key**
+
+Install `uv` if not already present: `curl -LsSf https://astral.sh/uv/install.sh | sh`
 
 ## Setup
 
@@ -47,9 +50,7 @@ frontend/  Next.js (App Router, TypeScript) wizard UI + live panels
 
 ```bash
 # from the repo root
-python3 -m venv .venv
-.venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install -r backend/requirements.txt
+uv sync
 ```
 
 Create a `.env` in the repo root (see `.env.example`):
@@ -76,7 +77,7 @@ Open two terminals.
 **Terminal 1 - backend (port 8000):**
 
 ```bash
-.venv/bin/python -m uvicorn backend.app.main:app --port 8000
+uv run uvicorn backend.app.main:app --port 8000
 ```
 
 **Terminal 2 - frontend (port 3000):**
@@ -95,10 +96,10 @@ The frontend talks to the backend at `http://127.0.0.1:8000` by default. To chan
 
 ```bash
 # unit tests (no API key needed)
-.venv/bin/python -m pytest backend/tests
+uv run pytest backend/tests
 
 # live end-to-end smoke test (backend running + OPENAI_API_KEY set)
-.venv/bin/python -m backend.debug.e2e_live
+uv run python -m backend.debug.e2e_live
 ```
 
 ## Logs
