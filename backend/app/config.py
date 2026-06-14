@@ -39,19 +39,21 @@ class Settings(BaseSettings):
     # Doc-intelligence self-critique loop bound.
     max_extraction_retries: int = 2
 
-    # Storage locations (local deployment).
-    data_dir: Path = REPO_ROOT / "backend" / "_data"
-    uploads_dir: Path = REPO_ROOT / "backend" / "_data" / "uploads"
-    logs_dir: Path = REPO_ROOT / "backend" / "_data" / "logs"
-    db_path: Path = REPO_ROOT / "backend" / "_data" / "itr.db"
+    # Storage locations. On Render free tier there is no persistent disk, so we
+    # default to /tmp which survives the process lifetime (one session = one
+    # filing). Override DATA_DIR in env for a machine with persistent storage.
+    data_dir: Path = Path("/tmp/itr_bot")
+    uploads_dir: Path = Path("/tmp/itr_bot/uploads")
+    logs_dir: Path = Path("/tmp/itr_bot/logs")
+    db_path: Path = Path("/tmp/itr_bot/itr.db")
 
-    # Logging. ``log_level`` controls verbosity (DEBUG shows live agent prompts,
-    # event payloads, and request timings). ``log_pretty`` renders a human-readable
-    # console line; the file handler always stays JSON for offline grep.
-    log_level: str = "DEBUG"
-    log_pretty: bool = True
+    # Logging.
+    log_level: str = "INFO"
+    log_pretty: bool = False  # JSON only in production (easier to grep in Render logs)
 
-    # Server / CORS.
+    # Server / CORS. Add your Vercel frontend URL to CORS_ORIGINS env var
+    # (comma-separated) when deploying, e.g.:
+    #   CORS_ORIGINS=https://itr-bot.vercel.app,https://your-custom-domain.com
     cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
     # Extraction cache TTL in seconds (default 7 days). Set to 0 to disable.

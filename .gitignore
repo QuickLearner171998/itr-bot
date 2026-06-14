@@ -1,8 +1,10 @@
 # Cursor IDE
 .cursor/
 
-# Secrets
+# Secrets — never commit
 .env
+.env.local
+.env.production
 
 # Python
 .venv/

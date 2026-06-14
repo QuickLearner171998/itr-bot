@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 
 from fastapi import FastAPI, Request
@@ -14,10 +15,15 @@ from .routes import router
 configure_logging()
 logger = get_logger(__name__)
 
+# Allow additional origins from the CORS_ORIGINS environment variable so the
+# Vercel frontend URL can be added at deploy time without a code change.
+_extra = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
+_all_origins = list(dict.fromkeys(settings.cors_origins + _extra))
+
 app = FastAPI(title="ITR Salaried Filler Bot", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=_all_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

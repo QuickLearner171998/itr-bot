@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: itr-bot-backend
+    runtime: python
+    buildCommand: pip install uv && uv sync --frozen
+    startCommand: uv run uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+    plan: free
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false          # set manually in Render dashboard (never commit secrets)
+      - key: CORS_ORIGINS
+        sync: false          # set to your Vercel URL, e.g. https://itr-bot.vercel.app
+      - key: LOG_LEVEL
+        value: INFO
+      - key: LOG_PRETTY
+        value: "false"
+      - key: EXTRACTION_CACHE_TTL
+        value: "0"           # disable SQLite cache on ephemeral /tmp (restarts clear it anyway)
