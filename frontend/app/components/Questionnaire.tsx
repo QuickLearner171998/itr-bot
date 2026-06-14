@@ -20,7 +20,11 @@ export function Questionnaire({ onDone, sessionId }: Props) {
       const defaults: Record<string, any> = {};
       r.sections.forEach((s: QSection) =>
         s.questions.forEach((q) => {
-          defaults[q.id] = q.default ?? (q.type === "bool" ? false : q.type === "number" ? 0 : "");
+          if (q.type === "bool") {
+            defaults[q.id] = q.extractable ? "unsure" : false;
+          } else {
+            defaults[q.id] = q.default ?? (q.type === "number" ? 0 : "");
+          }
         })
       );
       setAnswers(defaults);
@@ -49,7 +53,8 @@ export function Questionnaire({ onDone, sessionId }: Props) {
       <h2>Tell us about your year</h2>
       <p className="sub">
         Answer a few questions so we can pick the right ITR form, build your document
-        checklist, and tailor the computation. Nothing is filed yet.
+        checklist, and tailor the computation. Not sure about something? Pick
+        "Not sure" and we will figure it out from your documents. Nothing is filed yet.
       </p>
 
       {sections.map((s) => (
@@ -62,7 +67,27 @@ export function Questionnaire({ onDone, sessionId }: Props) {
                 {q.help && <div className="q-help">{q.help}</div>}
               </div>
               <div className="q-control">
-                {q.type === "bool" && (
+                {q.type === "bool" && q.extractable && (
+                  <div className="tri" role="radiogroup">
+                    {[
+                      { v: true, label: "Yes" },
+                      { v: false, label: "No" },
+                      { v: "unsure", label: "Not sure" },
+                    ].map((o) => (
+                      <button
+                        key={String(o.v)}
+                        type="button"
+                        className={`tri-opt ${answers[q.id] === o.v ? "on" : ""}`}
+                        onClick={() => set(q.id, o.v)}
+                        role="radio"
+                        aria-checked={answers[q.id] === o.v}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {q.type === "bool" && !q.extractable && (
                   <div
                     className={`toggle ${answers[q.id] ? "on" : ""}`}
                     onClick={() => set(q.id, !answers[q.id])}

@@ -75,6 +75,9 @@ class UserProfile(BaseModel):
     # Regime preference (None => auto-compare and recommend lower).
     preferred_regime: str | None = None
 
+    # Questions the user answered "not sure" on; resolved from documents later.
+    unsure_fields: list[str] = Field(default_factory=list)
+
 
 class FormDecision(BaseModel):
     """Output of the deterministic form-selection rule engine."""

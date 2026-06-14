@@ -7,6 +7,8 @@ agent is used only to produce a friendly natural-language summary of the plan.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from ..app.config import settings
 from ..schemas.documents import DocType
 from ..schemas.profile import (
@@ -38,33 +40,40 @@ QUESTIONNAIRE: list[dict] = [
     {"section": "House property", "questions": [
         {"id": "num_house_properties", "text": "How many house properties do you own?",
          "type": "number", "default": 0},
-        {"id": "has_home_loan", "text": "Do you have a home loan?", "type": "bool"},
+        {"id": "has_home_loan", "text": "Do you have a home loan?", "type": "bool",
+         "extractable": True},
         {"id": "has_let_out_property", "text": "Is any property let out (rented)?", "type": "bool",
          "depends_on": "num_house_properties"},
     ]},
     {"section": "Investments & capital gains", "questions": [
         {"id": "has_capital_gains", "text": "Did you sell shares, mutual funds, property or crypto?",
-         "type": "bool"},
+         "type": "bool", "extractable": True},
         {"id": "has_stcg", "text": "Any short-term capital gains?", "type": "bool",
-         "depends_on": "has_capital_gains"},
+         "depends_on": "has_capital_gains", "extractable": True},
         {"id": "ltcg_112a_above_125k", "text": "Are long-term equity gains above 1.25 lakh?",
-         "type": "bool", "depends_on": "has_capital_gains"},
+         "type": "bool", "depends_on": "has_capital_gains", "extractable": True},
         {"id": "has_crypto_vda", "text": "Any crypto / virtual digital asset gains?", "type": "bool",
-         "depends_on": "has_capital_gains"},
+         "depends_on": "has_capital_gains", "extractable": True},
         {"id": "has_rsu_esop", "text": "Do you hold RSUs / ESOPs?", "type": "bool"},
         {"id": "has_unlisted_shares", "text": "Do you hold unlisted shares?", "type": "bool"},
     ]},
     {"section": "Other income", "questions": [
-        {"id": "has_savings_interest", "text": "Savings bank interest?", "type": "bool"},
-        {"id": "has_fd_interest", "text": "Fixed/recurring deposit interest?", "type": "bool"},
-        {"id": "has_dividends", "text": "Dividend income?", "type": "bool"},
+        {"id": "has_savings_interest", "text": "Savings bank interest?", "type": "bool",
+         "extractable": True},
+        {"id": "has_fd_interest", "text": "Fixed/recurring deposit interest?", "type": "bool",
+         "extractable": True},
+        {"id": "has_dividends", "text": "Dividend income?", "type": "bool", "extractable": True},
     ]},
     {"section": "Deductions & retirement", "questions": [
         {"id": "has_pf", "text": "Do you contribute to EPF/PF?", "type": "bool"},
-        {"id": "has_nps", "text": "Do you contribute to NPS (self)?", "type": "bool"},
-        {"id": "has_employer_nps", "text": "Does your employer contribute to NPS?", "type": "bool"},
-        {"id": "claims_80c", "text": "Do you claim 80C (PPF, ELSS, LIC, etc.)?", "type": "bool"},
-        {"id": "claims_80d", "text": "Do you claim 80D (health insurance)?", "type": "bool"},
+        {"id": "has_nps", "text": "Do you contribute to NPS (self)?", "type": "bool",
+         "extractable": True},
+        {"id": "has_employer_nps", "text": "Does your employer contribute to NPS?", "type": "bool",
+         "extractable": True},
+        {"id": "claims_80c", "text": "Do you claim 80C (PPF, ELSS, LIC, etc.)?", "type": "bool",
+         "extractable": True},
+        {"id": "claims_80d", "text": "Do you claim 80D (health insurance)?", "type": "bool",
+         "extractable": True},
     ]},
     {"section": "Other flags", "questions": [
         {"id": "is_company_director", "text": "Are you a director in any company?", "type": "bool"},
@@ -80,13 +89,82 @@ QUESTIONNAIRE: list[dict] = [
 ]
 
 
+# Sentinel a bool question carries when the user answers "not sure". Such fields
+# are left at their default and recorded so documents resolve them later.
+UNSURE = "unsure"
+
+
 def build_profile(answers: dict) -> UserProfile:
-    """Build a ``UserProfile`` from raw questionnaire answers."""
+    """Build a ``UserProfile`` from raw questionnaire answers.
+
+    Bool answers set to :data:`UNSURE` are not applied to the profile; instead
+    their field names are collected into ``unsure_fields`` so the document stage
+    can resolve them from extracted figures.
+
+    Args:
+        answers: Raw questionnaire answers keyed by question id.
+
+    Returns:
+        A ``UserProfile`` with unsure bool answers deferred.
+    """
     cleaned = dict(answers)
     if cleaned.get("preferred_regime") in ("auto", "", None):
         cleaned["preferred_regime"] = None
-    valid = {k: v for k, v in cleaned.items() if k in UserProfile.model_fields}
+    unsure = [k for k, v in cleaned.items()
+              if v == UNSURE and k in UserProfile.model_fields]
+    valid = {k: v for k, v in cleaned.items()
+             if k in UserProfile.model_fields and v != UNSURE}
+    valid["unsure_fields"] = unsure
     return UserProfile(**valid)
+
+
+# Maps an extractable profile flag to a predicate over the consolidated input.
+_UNSURE_RESOLVERS: dict[str, "Callable[[TaxInput], bool]"] = {
+    "has_capital_gains": lambda ti: any((
+        ti.capital_gains.stcg_111a, ti.capital_gains.ltcg_112a,
+        ti.capital_gains.stcg_other, ti.capital_gains.ltcg_other,
+        ti.capital_gains.vda_gain)),
+    "has_stcg": lambda ti: (ti.capital_gains.stcg_111a + ti.capital_gains.stcg_other) > 0,
+    "ltcg_112a_above_125k": lambda ti: ti.capital_gains.ltcg_112a > 125_000,
+    "has_crypto_vda": lambda ti: ti.capital_gains.vda_gain > 0,
+    "has_savings_interest": lambda ti: ti.savings_interest > 0,
+    "has_fd_interest": lambda ti: ti.fd_interest > 0,
+    "has_dividends": lambda ti: ti.dividend > 0,
+    "has_home_loan": lambda ti: ti.deductions.home_loan_interest > 0,
+    "claims_80c": lambda ti: ti.deductions.amount_80c > 0,
+    "claims_80d": lambda ti: (ti.deductions.amount_80d_self
+                              + ti.deductions.amount_80d_parents) > 0,
+    "has_nps": lambda ti: ti.deductions.amount_80ccd1b > 0,
+    "has_employer_nps": lambda ti: ti.deductions.amount_80ccd2 > 0,
+}
+
+
+def resolve_unsure_flags(profile: UserProfile, ti: TaxInput) -> list[str]:
+    """Resolve "not sure" questionnaire answers from extracted documents.
+
+    For every field the user marked unsure, infer its boolean value from the
+    consolidated ``TaxInput`` and write it back onto ``profile``. Resolved
+    fields are removed from ``profile.unsure_fields``.
+
+    Args:
+        profile: User profile carrying ``unsure_fields`` to resolve.
+        ti: Consolidated tax input built from the uploaded documents.
+
+    Returns:
+        Human-readable notes describing each resolution.
+    """
+    notes: list[str] = []
+    remaining: list[str] = []
+    for field in profile.unsure_fields:
+        resolver = _UNSURE_RESOLVERS.get(field)
+        if resolver is None:
+            remaining.append(field)
+            continue
+        value = bool(resolver(ti))
+        setattr(profile, field, value)
+        notes.append(f"{field} = {value} (from documents)")
+    profile.unsure_fields = remaining
+    return notes
 
 
 def select_form(profile: UserProfile) -> FormDecision:

@@ -8,6 +8,7 @@ export interface Question {
   default?: string | number | boolean;
   help?: string;
   depends_on?: string;
+  extractable?: boolean;
 }
 
 export interface QSection {

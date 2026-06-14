@@ -20,6 +20,7 @@ from ..agents.intake import (
     QUESTIONNAIRE,
     build_checklist,
     build_profile,
+    resolve_unsure_flags,
     select_form,
     summarize_plan,
 )
@@ -28,6 +29,7 @@ from ..agents.reconcile import reconcile_documents
 from ..compute.consolidate import consolidate
 from ..schemas.compute import TaxInput
 from ..schemas.documents import DocType, DocumentExtraction
+from ..schemas.events import EventType
 from ..schemas.profile import ITRForm, UserProfile
 from .events import bus
 from .logging_setup import get_logger, session_id_var
@@ -162,10 +164,26 @@ async def compute(session_id: str) -> dict:
     form = ITRForm(state.get("decision", {}).get("form", ITRForm.ITR2.value))
 
     ti: TaxInput = consolidate(docs, age=profile.age)
+
+    extra: dict = {}
+    if profile.unsure_fields:
+        notes = resolve_unsure_flags(profile, ti)
+        decision = select_form(profile)
+        checklist = build_checklist(profile)
+        for note in notes:
+            await bus.emit(session_id, EventType.AGENT_STEP,
+                           f"Resolved from documents: {note}")
+        extra = {
+            "profile": profile.model_dump(),
+            "decision": decision.model_dump(),
+            "checklist": [c.model_dump() for c in checklist],
+        }
+        form = decision.form
+
     result = await run_computation(session_id, ti, form, profile)
 
-    store.update(session_id, {"tax_input": ti.model_dump(), **result})
-    return {"tax_input": ti.model_dump(), **result}
+    store.update(session_id, {"tax_input": ti.model_dump(), **extra, **result})
+    return {"tax_input": ti.model_dump(), **extra, **result}
 
 
 @router.get("/session/{session_id}/guidance")
