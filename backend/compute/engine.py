@@ -135,11 +135,53 @@ def _surcharge_threshold(total_income: float) -> float:
     return lower
 
 
-def _deductions_for_regime(ti: TaxInput, regime: str, salary_for_nps: float) -> float:
+def _hra_exemption(ti: TaxInput) -> float:
+    """HRA exemption u/s 10(13A): least of received, rent-10% basic, rate*basic.
+
+    Returns 0 unless explicit HRA inputs are provided (i.e. HRA not already
+    exempted inside Form 16). Old regime only; the caller gates by regime.
+    """
+    if ti.hra_received <= 0 or ti.hra_rent_paid <= 0:
+        return 0.0
+    basic = ti.hra_basic_da
+    rate = K.HRA_METRO_RATE if ti.hra_is_metro else K.HRA_NON_METRO_RATE
+    return max(0.0, min(
+        ti.hra_received,
+        ti.hra_rent_paid - K.HRA_RENT_BASIC_RATE * basic,
+        rate * basic))
+
+
+def _donation_80g(d, gti_after_other: float) -> float:
+    """80G donation deduction with the 10%-of-adjusted-GTI qualifying limit.
+
+    No-limit donations are deducted at their category rate; limited donations are
+    first capped to the qualifying pool (100% category consumed first), then the
+    category rate applied.
+    """
+    no_limit = d.donation_100_no_limit + 0.5 * d.donation_50_no_limit
+    pool = max(0.0, K.RATE_80G_QUALIFYING_LIMIT * gti_after_other)
+    d100 = min(d.donation_100_limit, pool)
+    pool -= d100
+    d50 = min(d.donation_50_limit, pool)
+    return no_limit + d100 + 0.5 * d50
+
+
+def _deductions_for_regime(
+    ti: TaxInput, regime: str, salary_for_nps: float, gti_normal: float
+) -> float:
     """Total Chapter VIA deductions allowed under the given regime.
 
-    New regime allows only employer NPS u/s 80CCD(2). Old regime allows the
-    full set with statutory caps.
+    New regime allows only employer NPS u/s 80CCD(2). Old regime allows the full
+    set with statutory caps, including 80E/80EEA/80DD/80DDB/80U/80GG and 80G.
+
+    Args:
+        ti: Consolidated tax input.
+        regime: "old" or "new".
+        salary_for_nps: Gross salary base for the 80CCD(2) percentage cap.
+        gti_normal: Slab-income GTI, used for 80G/80GG income-based limits.
+
+    Returns:
+        Total allowable Chapter VIA deduction.
     """
     d = ti.deductions
     is_senior = ti.age >= K.SENIOR_AGE
@@ -161,14 +203,45 @@ def _deductions_for_regime(ti: TaxInput, regime: str, salary_for_nps: float) -> 
     deposit_base = (savings + ti.fd_interest) if is_senior else savings
     eighty_tt = min(deposit_base, tta_cap)
 
-    return eighty_c + eighty_ccd1b + employer_nps + eighty_d + eighty_tt
+    eighty_e = d.amount_80e
+    eighty_eea = min(d.amount_80eea, K.CAP_80EEA)
+    eighty_dd = (K.CAP_80DD_SEVERE if d.amount_80dd_severe else K.CAP_80DD_NORMAL) \
+        if d.amount_80dd > 0 else 0.0
+    eighty_u = (K.CAP_80U_SEVERE if d.amount_80u_severe else K.CAP_80U_NORMAL) \
+        if d.amount_80u > 0 else 0.0
+    eighty_ddb = min(d.amount_80ddb, K.CAP_80DDB_SENIOR if is_senior else K.CAP_80DDB_NORMAL)
+
+    eighty_gg = 0.0
+    if d.amount_80gg > 0 and _hra_exemption(ti) <= 0:
+        eighty_gg = max(0.0, min(
+            K.CAP_80GG_ANNUAL,
+            K.RATE_80GG_INCOME * gti_normal,
+            d.amount_80gg - K.RATE_80GG_RENT_MINUS_INCOME * gti_normal))
+
+    base = (eighty_c + eighty_ccd1b + employer_nps + eighty_d + eighty_tt
+            + eighty_e + eighty_eea + eighty_dd + eighty_u + eighty_ddb + eighty_gg)
+    eighty_g = _donation_80g(d, max(0.0, gti_normal - base))
+    return base + eighty_g
 
 
 def _house_property(ti: TaxInput, regime: str) -> float:
-    """Net house-property income after allowed 24(b) interest and set-off caps."""
-    d = ti.deductions
-    base = ti.house_property_income
+    """Net house-property income after allowed 24(b) interest and set-off caps.
 
+    When ``let_out_annual_rent`` is provided, the let-out net is computed from the
+    annual value less municipal taxes, the 30% standard deduction, and full 24(b)
+    interest. Otherwise the legacy self-occupied / direct-income path is used.
+    """
+    d = ti.deductions
+
+    if ti.let_out_annual_rent > 0:
+        nav = max(0.0, ti.let_out_annual_rent - ti.let_out_municipal_taxes)
+        std = nav * K.HOUSE_PROPERTY_STD_DEDUCTION_RATE
+        net = nav - std - d.home_loan_interest
+        if regime == "old":
+            return max(net, -K.HOME_LOAN_SELF_OCCUPIED_CAP)
+        return max(net, 0.0)  # new regime: let-out loss not set off against other heads
+
+    base = ti.house_property_income
     if d.home_loan_self_occupied:
         if regime == "new":
             interest = 0.0  # self-occupied 24(b) not allowed in new regime
@@ -179,11 +252,29 @@ def _house_property(ti: TaxInput, regime: str) -> float:
             return max(net, -K.HOME_LOAN_SELF_OCCUPIED_CAP)
         return max(net, 0.0)  # new regime self-occupied loss lapses
 
-    # Let-out: full interest; loss set-off rules differ by regime.
+    # Let-out via direct net income input; loss set-off rules differ by regime.
     net = base - d.home_loan_interest
     if regime == "old":
         return max(net, -K.HOME_LOAN_SELF_OCCUPIED_CAP)  # aggregate HP set-off cap 2L
-    return max(net, 0.0)  # new regime: let-out loss not set off against other heads
+    return max(net, 0.0)
+
+
+def _agri_adjusted_slab_tax(
+    slab_tax: float, normal_income: float, ti: TaxInput,
+    slabs: list[tuple[float | None, float]], regime: str
+) -> float:
+    """Apply agricultural-income partial integration to slab tax.
+
+    Tax = tax(normal + agri) - tax(agri + basic exemption), when agri income
+    exceeds the threshold and normal income exceeds the basic exemption.
+    """
+    agri = ti.agricultural_income
+    be = _basic_exemption(regime, ti.age)
+    if agri <= K.AGRI_INCOME_THRESHOLD or normal_income <= be:
+        return slab_tax
+    tax_with = _slab_tax(normal_income + agri, slabs)
+    tax_agri = _slab_tax(agri + be, slabs)
+    return max(0.0, tax_with - tax_agri)
 
 
 def compute_regime(ti: TaxInput, regime: str) -> RegimeResult:
@@ -206,6 +297,8 @@ def compute_regime(ti: TaxInput, regime: str) -> RegimeResult:
     if regime == "new":
         exempt = 0.0          # HRA/LTA and most Sec 10 exemptions disallowed
         professional_tax = 0.0  # 16(iii) not allowed in new regime
+    else:
+        exempt += _hra_exemption(ti)  # HRA not already exempted in Form 16
 
     net_salary = max(0.0, gross_salary - exempt - std_ded - professional_tax)
     steps.append(ComputeStep(key="gross_salary", label="Gross Salary", amount=gross_salary, kind="add"))
@@ -220,17 +313,31 @@ def compute_regime(ti: TaxInput, regime: str) -> RegimeResult:
     if hp_income:
         steps.append(ComputeStep(key="house_property", label="Income from House Property", amount=hp_income, kind="add"))
 
-    other_sources = ti.savings_interest + ti.fd_interest + ti.dividend + ti.other_income
+    fp = ti.family_pension
+    fp_cap = K.NEW_FAMILY_PENSION_DEDUCTION_CAP if regime == "new" else K.FAMILY_PENSION_CAP_OLD
+    fp_deduction = min(fp * K.FAMILY_PENSION_DED_RATE, fp_cap) if fp else 0.0
+    other_sources = (ti.savings_interest + ti.fd_interest + ti.dividend
+                     + ti.other_income + fp)
     stcg_other = ti.capital_gains.stcg_other  # slab-rate, part of normal income
     if other_sources:
         steps.append(ComputeStep(key="other_sources", label="Income from Other Sources", amount=other_sources, kind="add"))
+    if fp_deduction:
+        steps.append(ComputeStep(key="fp_ded", label="Less: Family Pension Deduction (Sec 57)", amount=fp_deduction, kind="subtract"))
     if stcg_other:
         steps.append(ComputeStep(key="stcg_other", label="STCG (slab rate)", amount=stcg_other, kind="add"))
 
-    gti_normal = net_salary + hp_income + other_sources + stcg_other
+    gti_normal = net_salary + hp_income + other_sources - fp_deduction + stcg_other
+
+    # Brought-forward loss set-off (old regime) against gross total income.
+    if regime == "old" and ti.brought_forward_loss > 0:
+        setoff = min(ti.brought_forward_loss, max(0.0, gti_normal))
+        if setoff:
+            steps.append(ComputeStep(key="bf_loss", label="Less: Brought-Forward Loss Set-off", amount=setoff, kind="subtract"))
+            gti_normal -= setoff
+
     steps.append(ComputeStep(key="gti", label="Gross Total Income (slab)", amount=gti_normal, kind="total"))
 
-    deductions = _deductions_for_regime(ti, regime, gross_salary)
+    deductions = _deductions_for_regime(ti, regime, gross_salary, gti_normal)
     deductions = min(deductions, max(0.0, gti_normal))
     if deductions:
         steps.append(ComputeStep(key="chvia", label="Less: Chapter VI-A Deductions", amount=deductions, kind="subtract"))
@@ -239,7 +346,8 @@ def compute_regime(ti: TaxInput, regime: str) -> RegimeResult:
     steps.append(ComputeStep(key="total_income", label="Taxable Income (slab)", amount=normal_income, kind="total"))
 
     slabs = K.NEW_REGIME_SLABS if regime == "new" else _old_regime_slabs(ti.age)
-    slab_tax = _slab_tax(normal_income, slabs)
+    slab_tax = _agri_adjusted_slab_tax(
+        _slab_tax(normal_income, slabs), normal_income, ti, slabs, regime)
 
     cg = _capital_gains_tax(ti, normal_income, regime)
     special_income = (ti.capital_gains.stcg_111a + ti.capital_gains.ltcg_112a
@@ -283,7 +391,13 @@ def compute_regime(ti: TaxInput, regime: str) -> RegimeResult:
     cess = (tax_after_rebate + surcharge) * K.HEALTH_EDUCATION_CESS
     steps.append(ComputeStep(key="cess", label="Add: Health & Education Cess (4%)", amount=cess, kind="add"))
 
-    total_tax = _round_to_ten(tax_after_rebate + surcharge + cess)
+    gross_tax = tax_after_rebate + surcharge + cess
+    relief = ti.relief_89 + ti.relief_90_91
+    relief = min(relief, gross_tax)
+    if relief:
+        steps.append(ComputeStep(key="relief", label="Less: Relief (Sec 89 / 90 / 91)", amount=relief, kind="subtract"))
+
+    total_tax = _round_to_ten(gross_tax - relief)
     steps.append(ComputeStep(key="total_tax", label="Total Tax Liability", amount=total_tax, kind="total"))
 
     taxes_paid = ti.tds_total + ti.advance_tax + ti.self_assessment_tax

@@ -96,7 +96,7 @@ The frontend talks to the backend at `http://127.0.0.1:8000` by default. To chan
 
 ```bash
 # unit tests (no API key needed)
-uv run pytest backend/tests
+uv run python -m pytest backend/tests
 
 # live end-to-end smoke test (backend running + OPENAI_API_KEY set)
 uv run python -m backend.debug.e2e_live

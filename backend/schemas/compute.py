@@ -40,6 +40,22 @@ class Deductions(BaseModel):
     home_loan_self_occupied: bool = True
     home_loan_principal: float = 0.0  # part of 80C
 
+    # Additional old-regime Chapter VIA deductions.
+    amount_80e: float = 0.0          # education loan interest (no cap)
+    amount_80eea: float = 0.0        # additional home-loan interest (affordable)
+    amount_80dd: float = 0.0         # disabled dependent
+    amount_80dd_severe: bool = False
+    amount_80ddb: float = 0.0        # specified-disease treatment
+    amount_80u: float = 0.0          # self disability
+    amount_80u_severe: bool = False
+    amount_80gg: float = 0.0         # rent paid (no HRA); raw rent, capped in engine
+
+    # 80G donations, pre-classified by deduction category.
+    donation_100_no_limit: float = 0.0
+    donation_50_no_limit: float = 0.0
+    donation_100_limit: float = 0.0   # subject to 10%-of-adjusted-GTI qualifying limit
+    donation_50_limit: float = 0.0
+
 
 class TaxInput(BaseModel):
     """Canonical consolidated input for the tax engine."""
@@ -49,18 +65,37 @@ class TaxInput(BaseModel):
     salaries: list[SalaryComponent] = Field(default_factory=list)
     house_property_income: float = 0.0  # net (can be negative for self-occupied loss)
 
+    # Let-out house property (drives net income when provided). If annual_rent is
+    # set, net income is computed (NAV less municipal taxes, 30% std deduction,
+    # 24(b) interest); otherwise ``house_property_income`` is used directly.
+    let_out_annual_rent: float = 0.0
+    let_out_municipal_taxes: float = 0.0
+
+    # HRA exemption inputs (old regime, Sec 10(13A)). Use only for HRA not already
+    # exempted inside Form 16's ``exempt_allowances``.
+    hra_received: float = 0.0
+    hra_rent_paid: float = 0.0
+    hra_basic_da: float = 0.0
+    hra_is_metro: bool = False
+
     savings_interest: float = 0.0
     fd_interest: float = 0.0
     dividend: float = 0.0
+    family_pension: float = 0.0  # taxed under other sources; 1/3 std deduction
     other_income: float = 0.0
+
+    agricultural_income: float = 0.0  # for rate purposes (partial integration)
+    brought_forward_loss: float = 0.0  # set off against current income (old regime)
 
     capital_gains: CapitalGains = Field(default_factory=CapitalGains)
     deductions: Deductions = Field(default_factory=Deductions)
 
-    # Taxes already paid.
+    # Taxes already paid and reliefs.
     tds_total: float = 0.0
     advance_tax: float = 0.0
     self_assessment_tax: float = 0.0
+    relief_89: float = 0.0       # arrears relief
+    relief_90_91: float = 0.0    # foreign tax credit (DTAA / unilateral)
 
 
 class ComputeStep(BaseModel):

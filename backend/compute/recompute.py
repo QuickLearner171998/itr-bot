@@ -35,36 +35,97 @@ def _independent_slab_tax(income: float, regime: str, age: int) -> float:
     return tax
 
 
+def _independent_hra(ti: TaxInput) -> float:
+    """Independent HRA exemption (Sec 10(13A))."""
+    if ti.hra_received <= 0 or ti.hra_rent_paid <= 0:
+        return 0.0
+    rate = K.HRA_METRO_RATE if ti.hra_is_metro else K.HRA_NON_METRO_RATE
+    return max(0.0, min(ti.hra_received,
+                        ti.hra_rent_paid - K.HRA_RENT_BASIC_RATE * ti.hra_basic_da,
+                        rate * ti.hra_basic_da))
+
+
+def _independent_house_property(ti: TaxInput, regime: str) -> float:
+    """Independent net house-property income."""
+    d = ti.deductions
+    if ti.let_out_annual_rent > 0:
+        nav = max(0.0, ti.let_out_annual_rent - ti.let_out_municipal_taxes)
+        net = nav - nav * K.HOUSE_PROPERTY_STD_DEDUCTION_RATE - d.home_loan_interest
+        return net if regime == "old" else max(net, 0.0)
+    if d.home_loan_self_occupied:
+        interest = 0.0 if regime == "new" else min(d.home_loan_interest, K.HOME_LOAN_SELF_OCCUPIED_CAP)
+        net = ti.house_property_income - interest
+        return max(net, -K.HOME_LOAN_SELF_OCCUPIED_CAP) if regime == "old" else max(net, 0.0)
+    net = ti.house_property_income - d.home_loan_interest
+    return max(net, -K.HOME_LOAN_SELF_OCCUPIED_CAP) if regime == "old" else max(net, 0.0)
+
+
+def _independent_old_deductions(ti: TaxInput, gross: float, gti: float) -> float:
+    """Independent total old-regime Chapter VIA deduction."""
+    d = ti.deductions
+    senior = ti.age >= K.SENIOR_AGE
+    total = min(d.amount_80c + d.home_loan_principal, K.CAP_80C)
+    total += min(d.amount_80ccd1b, K.CAP_80CCD1B)
+    total += min(d.amount_80ccd2, gross * K.EMPLOYER_NPS_CAP_RATE_OLD)
+    total += min(d.amount_80d_self, K.CAP_80D_SELF_SENIOR if senior else K.CAP_80D_SELF)
+    total += min(d.amount_80d_parents, K.CAP_80D_PARENTS)
+    deposit_base = (ti.savings_interest + ti.fd_interest) if senior else ti.savings_interest
+    total += min(deposit_base, K.CAP_80TTB if senior else K.CAP_80TTA)
+    total += d.amount_80e
+    total += min(d.amount_80eea, K.CAP_80EEA)
+    if d.amount_80dd > 0:
+        total += K.CAP_80DD_SEVERE if d.amount_80dd_severe else K.CAP_80DD_NORMAL
+    if d.amount_80u > 0:
+        total += K.CAP_80U_SEVERE if d.amount_80u_severe else K.CAP_80U_NORMAL
+    total += min(d.amount_80ddb, K.CAP_80DDB_SENIOR if senior else K.CAP_80DDB_NORMAL)
+    if d.amount_80gg > 0 and _independent_hra(ti) <= 0:
+        total += max(0.0, min(K.CAP_80GG_ANNUAL, K.RATE_80GG_INCOME * gti,
+                              d.amount_80gg - K.RATE_80GG_RENT_MINUS_INCOME * gti))
+    pool = max(0.0, K.RATE_80G_QUALIFYING_LIMIT * max(0.0, gti - total))
+    d100 = min(d.donation_100_limit, pool)
+    d50 = min(d.donation_50_limit, pool - d100)
+    total += d.donation_100_no_limit + 0.5 * d.donation_50_no_limit + d100 + 0.5 * d50
+    return total
+
+
+def _independent_agri(slab_tax: float, normal: float, ti: TaxInput, regime: str) -> float:
+    """Independent agricultural-income partial integration."""
+    agri = ti.agricultural_income
+    be = (K.NEW_REGIME_SLABS[0][0] or 0) if regime == "new" else (
+        500000 if ti.age >= K.SUPER_SENIOR_AGE else 300000 if ti.age >= K.SENIOR_AGE else 250000)
+    if agri <= K.AGRI_INCOME_THRESHOLD or normal <= be:
+        return slab_tax
+    return max(0.0, _independent_slab_tax(normal + agri, regime, ti.age)
+               - _independent_slab_tax(agri + be, regime, ti.age))
+
+
 def _independent_regime_total(ti: TaxInput, regime: str) -> float:
     """Re-derive the total tax liability for one regime independently."""
     gross = sum(s.gross_salary for s in ti.salaries)
-    exempt = 0.0 if regime == "new" else sum(s.exempt_allowances for s in ti.salaries)
+    exempt = 0.0 if regime == "new" else sum(s.exempt_allowances for s in ti.salaries) + _independent_hra(ti)
     ptax = 0.0 if regime == "new" else sum(s.professional_tax for s in ti.salaries)
     std = K.NEW_STANDARD_DEDUCTION if regime == "new" else K.OLD_STANDARD_DEDUCTION
     net_salary = max(0.0, gross - exempt - std - ptax)
 
-    d = ti.deductions
-    if regime == "new":
-        ded = min(d.amount_80ccd2, gross * K.EMPLOYER_NPS_CAP_RATE)
-        hp = 0.0 if d.home_loan_self_occupied else max(ti.house_property_income - d.home_loan_interest, 0.0)
-    else:
-        ec = min(d.amount_80c + d.home_loan_principal, K.CAP_80C)
-        senior = ti.age >= K.SENIOR_AGE
-        d80d = min(d.amount_80d_self, K.CAP_80D_SELF_SENIOR if senior else K.CAP_80D_SELF) \
-            + min(d.amount_80d_parents, K.CAP_80D_PARENTS)
-        tta = min(ti.savings_interest, K.CAP_80TTB if senior else K.CAP_80TTA)
-        ded = ec + min(d.amount_80ccd1b, K.CAP_80CCD1B) \
-            + min(d.amount_80ccd2, gross * K.EMPLOYER_NPS_CAP_RATE_OLD) + d80d + tta
-        interest = min(d.home_loan_interest, K.HOME_LOAN_SELF_OCCUPIED_CAP) if d.home_loan_self_occupied \
-            else d.home_loan_interest
-        hp = max(ti.house_property_income - interest, -K.HOME_LOAN_SELF_OCCUPIED_CAP)
+    hp = _independent_house_property(ti, regime)
 
-    other = ti.savings_interest + ti.fd_interest + ti.dividend + ti.other_income
+    fp = ti.family_pension
+    fp_cap = K.NEW_FAMILY_PENSION_DEDUCTION_CAP if regime == "new" else K.FAMILY_PENSION_CAP_OLD
+    fp_ded = min(fp * K.FAMILY_PENSION_DED_RATE, fp_cap) if fp else 0.0
+    other = ti.savings_interest + ti.fd_interest + ti.dividend + ti.other_income + fp
     cg = ti.capital_gains
-    gti = net_salary + hp + other + cg.stcg_other
+    gti = net_salary + hp + other - fp_ded + cg.stcg_other
+    if regime == "old" and ti.brought_forward_loss > 0:
+        gti -= min(ti.brought_forward_loss, max(0.0, gti))
+
+    if regime == "new":
+        ded = min(ti.deductions.amount_80ccd2, gross * K.EMPLOYER_NPS_CAP_RATE)
+    else:
+        ded = _independent_old_deductions(ti, gross, gti)
     normal = round(max(0.0, gti - min(ded, max(0.0, gti))) / 10.0) * 10
 
-    slab_tax = _independent_slab_tax(normal, regime, ti.age)
+    slab_tax = _independent_agri(
+        _independent_slab_tax(normal, regime, ti.age), normal, ti, regime)
 
     be = (K.NEW_REGIME_SLABS[0][0] or 0) if regime == "new" else (
         500000 if ti.age >= K.SUPER_SENIOR_AGE else 300000 if ti.age >= K.SENIOR_AGE else 250000)
@@ -102,7 +163,9 @@ def _independent_regime_total(ti: TaxInput, regime: str) -> float:
         + (s111a * K.STCG_111A_RATE + l112a * K.LTCG_112A_RATE) * min(rate, K.CG_SURCHARGE_CAP)
 
     cess = (tax + surcharge) * K.HEALTH_EDUCATION_CESS
-    return round((tax + surcharge + cess) / 10.0) * 10
+    gross_tax = tax + surcharge + cess
+    relief = min(ti.relief_89 + ti.relief_90_91, gross_tax)
+    return round((gross_tax - relief) / 10.0) * 10
 
 
 def verify(ti: TaxInput, computation: TaxComputation) -> tuple[bool, str]:

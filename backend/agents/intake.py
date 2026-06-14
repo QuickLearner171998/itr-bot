@@ -270,6 +270,21 @@ _HOW_TO: dict[str, ChecklistItem] = {
         why="TDS on interest or other non-salary income.",
         source="Deductor / TRACES",
         how_to_get=["Download from the deductor (bank/company) if TDS was deducted on non-salary income."]),
+    DocType.RENT_RECEIPT.value: ChecklistItem(
+        doc_type=DocType.RENT_RECEIPT.value, title="Rent Receipts / HRA Proof", required=False,
+        why="Compute HRA exemption (Sec 10(13A)) or 80GG rent deduction.",
+        source="Landlord / salary slip",
+        how_to_get=[
+            "Collect rent receipts (or the rent agreement + bank proof) for FY 2025-26.",
+            "Note your annual basic + DA from a salary slip and whether the home is in a metro city.",
+            "Landlord PAN is required if annual rent exceeds 1,00,000."]),
+    DocType.DONATION_80G.value: ChecklistItem(
+        doc_type=DocType.DONATION_80G.value, title="80G Donation Receipts", required=False,
+        why="Claim deduction for eligible donations under Sec 80G.",
+        source="Donee institution",
+        how_to_get=[
+            "Collect stamped 80G receipts showing the donee PAN and the deduction category.",
+            "Ensure the donation reflects in your AIS (ARN/donation reference)."]),
 }
 
 
@@ -289,12 +304,15 @@ def build_checklist(profile: UserProfile) -> list[ChecklistItem]:
         items.append(_HOW_TO[DocType.INTEREST_CERT.value])
     if profile.has_capital_gains or profile.has_crypto_vda or profile.has_rsu_esop:
         items.append(_HOW_TO[DocType.BROKER_PNL.value])
-    if profile.has_home_loan:
+    if profile.has_home_loan or profile.num_house_properties > 0:
         items.append(_HOW_TO[DocType.HOME_LOAN_CERT.value])
     if profile.claims_80c or profile.claims_80d or profile.has_nps:
         items.append(_HOW_TO[DocType.DEDUCTION_PROOF.value])
     if profile.has_fd_interest or profile.has_dividends:
         items.append(_HOW_TO[DocType.FORM16A.value])
+    # HRA/rent and donations apply broadly; offer them as optional.
+    items.append(_HOW_TO[DocType.RENT_RECEIPT.value])
+    items.append(_HOW_TO[DocType.DONATION_80G.value])
     return items
 
 

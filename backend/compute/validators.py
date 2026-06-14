@@ -130,7 +130,8 @@ def validate_final_return(ti: TaxInput, form: ITRForm, profile: UserProfile) -> 
     total_income = (
         sum(s.gross_salary for s in ti.salaries)
         + ti.savings_interest + ti.fd_interest + ti.dividend + ti.other_income
-        + ti.house_property_income
+        + ti.family_pension
+        + ti.house_property_income + ti.let_out_annual_rent
         + cg.stcg_111a + cg.ltcg_112a + cg.stcg_other + cg.ltcg_other + cg.vda_gain
     )
 

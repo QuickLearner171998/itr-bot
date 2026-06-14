@@ -158,3 +158,71 @@ def test_senior_citizen_higher_exemption():
     res = compute_regime(ti, "old")
     # 3L net (350k-50k std), senior exemption 3L -> nil tax.
     assert res.total_tax_liability == 0.0
+
+
+def test_hra_exemption_old_regime():
+    # Least of: HRA 240000, rent 300000 - 10%*1000000 = 200000, 50%*1000000 = 500000.
+    ti = TaxInput(salaries=[SalaryComponent(gross_salary=1500000)],
+                  hra_received=240000, hra_rent_paid=300000, hra_basic_da=1000000,
+                  hra_is_metro=True)
+    res = compute_regime(ti, "old")
+    exempt = next(s for s in res.steps if s.key == "exempt")
+    assert round(exempt.amount) == 200000
+
+
+def test_hra_not_allowed_new_regime():
+    ti = TaxInput(salaries=[SalaryComponent(gross_salary=1500000)],
+                  hra_received=240000, hra_rent_paid=300000, hra_basic_da=1000000)
+    res = compute_regime(ti, "new")
+    assert not any(s.key == "exempt" for s in res.steps)
+
+
+def test_let_out_house_property_30pct_deduction():
+    # NAV 300000 - 0 municipal; 30% std = 90000; interest 50000 -> net 160000.
+    ti = TaxInput(salaries=[SalaryComponent(gross_salary=1000000)],
+                  let_out_annual_rent=300000,
+                  deductions=Deductions(home_loan_interest=50000, home_loan_self_occupied=False))
+    res = compute_regime(ti, "old")
+    hp = next(s for s in res.steps if s.key == "house_property")
+    assert round(hp.amount) == 160000
+
+
+def test_80g_50pct_with_qualifying_limit():
+    ti = TaxInput(salaries=[SalaryComponent(gross_salary=1500000)],
+                  deductions=Deductions(donation_50_limit=100000))
+    res = compute_regime(ti, "old")
+    # Limited to 10% of adjusted GTI then 50%; just assert a positive 80G effect.
+    ded = next(s for s in res.steps if s.key == "chvia")
+    assert ded.amount > 0
+
+
+def test_family_pension_deduction_capped():
+    ti = TaxInput(salaries=[SalaryComponent(gross_salary=800000)], family_pension=120000)
+    res = compute_regime(ti, "old")
+    fp = next(s for s in res.steps if s.key == "fp_ded")
+    # 1/3 of 120000 = 40000, capped at 15000 (old).
+    assert round(fp.amount) == 15000
+
+
+def test_relief_reduces_total_tax():
+    base = compute_regime(TaxInput(salaries=[SalaryComponent(gross_salary=1500000)]), "old")
+    with_relief = compute_regime(
+        TaxInput(salaries=[SalaryComponent(gross_salary=1500000)], relief_89=10000), "old")
+    assert base.total_tax_liability - with_relief.total_tax_liability == 10000
+
+
+def test_recompute_agrees_with_all_heads():
+    ti = TaxInput(
+        salaries=[SalaryComponent(gross_salary=1800000, exempt_allowances=50000,
+                                  professional_tax=2400)],
+        hra_received=180000, hra_rent_paid=240000, hra_basic_da=900000, hra_is_metro=True,
+        let_out_annual_rent=240000,
+        family_pension=90000,
+        deductions=Deductions(
+            amount_80c=150000, amount_80ccd1b=50000, amount_80d_self=25000,
+            amount_80e=40000, amount_80ddb=30000, home_loan_interest=120000,
+            home_loan_self_occupied=False, donation_50_limit=50000),
+        savings_interest=12000, fd_interest=30000)
+    comp = compute_taxes(ti)
+    ok, note = verify(ti, comp)
+    assert ok is True, note

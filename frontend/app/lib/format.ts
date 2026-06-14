@@ -24,6 +24,8 @@ const ICONS: Record<string, string> = {
   interest_cert: "🏦",
   home_loan_cert: "🏠",
   deduction_proof: "🧮",
+  rent_receipt: "🔑",
+  donation_80g: "🎁",
 };
 
 export function docIcon(t: string): string {

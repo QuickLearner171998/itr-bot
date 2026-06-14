@@ -59,6 +59,37 @@ CAP_80TTA = 10000.0          # savings interest, < 60
 CAP_80TTB = 50000.0          # interest, seniors
 HOME_LOAN_SELF_OCCUPIED_CAP = 200000.0  # Sec 24(b) self-occupied
 
+# Additional Chapter VIA deductions (old regime).
+CAP_80EEA = 150000.0         # additional interest, affordable housing
+CAP_80DD_NORMAL = 75000.0    # disabled dependent (40-79% disability)
+CAP_80DD_SEVERE = 125000.0   # severe disability (80%+)
+CAP_80U_NORMAL = 75000.0     # self disability
+CAP_80U_SEVERE = 125000.0
+CAP_80DDB_NORMAL = 40000.0   # specified disease treatment
+CAP_80DDB_SENIOR = 100000.0
+# 80E (education loan interest) has no monetary cap.
+
+# 80GG (rent paid when no HRA): least of the three.
+CAP_80GG_ANNUAL = 60000.0            # 5,000 per month
+RATE_80GG_INCOME = 0.25              # 25% of adjusted total income
+RATE_80GG_RENT_MINUS_INCOME = 0.10  # rent paid less 10% of adjusted total income
+
+# 80G qualifying-limit donations are capped at 10% of adjusted GTI.
+RATE_80G_QUALIFYING_LIMIT = 0.10
+
+# --- HRA exemption (Sec 10(13A), old regime) --------------------------------
+HRA_METRO_RATE = 0.50        # 50% of basic+DA for metro cities
+HRA_NON_METRO_RATE = 0.40    # 40% otherwise
+HRA_RENT_BASIC_RATE = 0.10   # rent paid in excess of 10% of basic+DA
+
+# --- Family pension standard deduction (Sec 57(iia)) ------------------------
+FAMILY_PENSION_DED_RATE = 1.0 / 3.0
+FAMILY_PENSION_CAP_OLD = 15000.0
+# New-regime cap reuses NEW_FAMILY_PENSION_DEDUCTION_CAP (25,000).
+
+# --- Agricultural income partial integration --------------------------------
+AGRI_INCOME_THRESHOLD = 5000.0  # partial integration applies above this
+
 # 80CCD(2) employer NPS: % of salary, allowed in BOTH regimes.
 EMPLOYER_NPS_CAP_RATE = 0.14  # new regime 14%; old regime 10% (private)
 EMPLOYER_NPS_CAP_RATE_OLD = 0.10
