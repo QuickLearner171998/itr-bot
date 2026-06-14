@@ -27,11 +27,11 @@ class Settings(BaseSettings):
     # Model routing (LiteLLM "openai/<model>" strings). Correctness-critical
     # tasks use the strongest reasoning model; lighter prose tasks use the mini.
     # All overridable via environment variables / .env.
-    extraction_model: str = "openai/gpt-5"
-    validation_model: str = "openai/gpt-5"
-    sanity_check_model: str = "openai/gpt-5"
+    extraction_model: str = "openai/gpt-5-mini"
+    validation_model: str = "openai/gpt-5-mini"
+    sanity_check_model: str = "openai/gpt-5-mini"
     orchestration_model: str = "openai/gpt-5-mini"
-    chat_model: str = "openai/gpt-4.1-mini"
+    chat_model: str = "openai/gpt-5-mini"
 
     # Reasoning effort hint forwarded to reasoning-capable models.
     extraction_reasoning_effort: str = "high"

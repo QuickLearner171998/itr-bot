@@ -61,8 +61,8 @@ cp .env.example .env
 # then edit .env and set OPENAI_API_KEY=sk-...
 ```
 
-All model choices and settings are configurable in `.env` (extraction/validation use
-`gpt-5`; lighter prose and chat use `gpt-5-mini`).
+All model choices and settings are configurable in `.env` or via environment variables.
+All tasks default to `gpt-5-mini`; override per-task via `EXTRACTION_MODEL`, `VALIDATION_MODEL`, etc.
 
 ### 2. Frontend
 
@@ -107,6 +107,63 @@ uv run python -m backend.debug.e2e_live
 
 Structured JSON logs (with per-session correlation ids and full agent/event traces) are
 written to `backend/_data/logs/backend.jsonl`.
+
+## Deployment
+
+The app is split: **backend on [Render](https://render.com)**, **frontend on [Vercel](https://vercel.com)**.
+
+### Backend — Render
+
+1. Create a new **Web Service** on Render, connect your GitHub repo.
+2. Set the following in the Render dashboard:
+   - **Build command**: `pip install uv && uv sync --frozen`
+   - **Start command**: `uv run uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT`
+   - **Runtime**: Python
+3. Add environment variables in the Render dashboard:
+
+   | Key | Value |
+   |-----|-------|
+   | `OPENAI_API_KEY` | `sk-...` |
+   | `CORS_ORIGINS` | `https://<your-vercel-url>.vercel.app` |
+   | `LOG_LEVEL` | `INFO` |
+   | `LOG_PRETTY` | `false` |
+   | `EXTRACTION_CACHE_TTL` | `0` |
+
+   > `CORS_ORIGINS` accepts comma-separated URLs.
+
+### Frontend — Vercel
+
+1. Install the Vercel CLI: `npm install -g vercel`
+2. From the `frontend/` directory:
+
+   ```bash
+   cd frontend
+   vercel --prod
+   ```
+
+3. The `frontend/vercel.json` already rewrites `/api/*` to your Render backend URL. Update it if your Render service URL differs:
+
+   ```json
+   {
+     "rewrites": [
+       {
+         "source": "/api/:path*",
+         "destination": "https://<your-render-service>.onrender.com/api/:path*"
+       }
+     ]
+   }
+   ```
+
+4. No `NEXT_PUBLIC_API_BASE` env var needed — relative `/api/` paths are used by default.
+
+### Verify
+
+```bash
+curl https://<your-render-service>.onrender.com/health
+curl https://<your-vercel-url>.vercel.app/api/health
+```
+
+---
 
 ## Scope
 
