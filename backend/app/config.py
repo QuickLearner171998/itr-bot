@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     validation_model: str = "openai/gpt-5"
     sanity_check_model: str = "openai/gpt-5"
     orchestration_model: str = "openai/gpt-5-mini"
-    chat_model: str = "openai/gpt-5-mini"
+    chat_model: str = "openai/gpt-4.1-mini"
 
     # Reasoning effort hint forwarded to reasoning-capable models.
     extraction_reasoning_effort: str = "high"

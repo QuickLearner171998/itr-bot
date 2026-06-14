@@ -30,6 +30,16 @@ from ..agents.reconcile import reconcile_documents
 from ..compute.consolidate import consolidate
 from ..schemas.compute import TaxInput
 from ..schemas.documents import DocType, DocumentExtraction
+
+# Doc types where a filer may upload more than one file (e.g. multiple employers,
+# brokers, or deductors). Stored as a list in session state.
+_MULTI_UPLOAD_TYPES = {
+    DocType.FORM16,       # one per employer
+    DocType.FORM16A,      # one per non-salary deductor
+    DocType.BROKER_PNL,   # one per broker
+    DocType.INTEREST_CERT,  # one per bank
+    DocType.DONATION_80G,   # one per recipient / batch
+}
 from ..schemas.events import EventType
 from ..schemas.profile import ITRForm, UserProfile
 from .events import bus
@@ -44,6 +54,21 @@ def _require(session_id: str) -> None:
     if not store.exists(session_id):
         raise HTTPException(status_code=404, detail="Unknown session")
     session_id_var.set(session_id)
+
+
+def _flatten_docs(state: dict) -> list[DocumentExtraction]:
+    """Flatten the session document store into a flat list of DocumentExtraction.
+
+    Multi-upload slots (Form 16, broker P&L, etc.) are stored as lists; single
+    slots as dicts. Both are normalised here.
+    """
+    docs: list[DocumentExtraction] = []
+    for value in state.get("documents", {}).values():
+        if isinstance(value, list):
+            docs.extend(DocumentExtraction(**d) for d in value)
+        else:
+            docs.append(DocumentExtraction(**value))
+    return docs
 
 
 @router.post("/session")
@@ -150,30 +175,55 @@ async def upload_document(
 
     state = store.get(session_id)
     docs = state.get("documents", {})
-    docs[dtype.value] = extraction.model_dump()
+    # Multi-upload doc types are stored as lists; single-upload types as a dict.
+    if dtype in _MULTI_UPLOAD_TYPES:
+        slot = docs.get(dtype.value)
+        if isinstance(slot, list):
+            slot.append(extraction.model_dump())
+        else:
+            slot = [extraction.model_dump()]
+        docs[dtype.value] = slot
+    else:
+        docs[dtype.value] = extraction.model_dump()
     store.update(session_id, {"documents": docs})
     return extraction.model_dump()
 
 
 @router.post("/session/{session_id}/documents/{doc_type}/review")
-def review_document(session_id: str, doc_type: str, edits: dict = Body(...)) -> dict:
+def review_document(
+    session_id: str, doc_type: str, edits: dict = Body(...),
+    index: int = 0,
+) -> dict:
     """Apply human review edits to extracted field values.
 
     Edits map ``{field_name: new_value}``; edited fields get confidence 1.0.
+    For multi-upload doc types (Form 16, broker P&L, etc.) ``index`` selects
+    which uploaded copy to edit (0-based).
     """
     _require(session_id)
     state = store.get(session_id)
     docs = state.get("documents", {})
     if doc_type not in docs:
         raise HTTPException(status_code=404, detail="Document not extracted yet")
-    doc = DocumentExtraction(**docs[doc_type])
+    slot = docs[doc_type]
+    if isinstance(slot, list):
+        if index >= len(slot):
+            raise HTTPException(status_code=404, detail="Index out of range")
+        raw = slot[index]
+    else:
+        raw = slot
+    doc = DocumentExtraction(**raw)
     for field in doc.fields:
         if field.name in edits:
             field.value = edits[field.name]
             field.confidence = 1.0
             field.flagged = False
     doc.status = "validated"
-    docs[doc_type] = doc.model_dump()
+    if isinstance(slot, list):
+        slot[index] = doc.model_dump()
+        docs[doc_type] = slot
+    else:
+        docs[doc_type] = doc.model_dump()
     store.update(session_id, {"documents": docs})
     return doc.model_dump()
 
@@ -183,7 +233,7 @@ async def run_reconcile(session_id: str) -> dict:
     """Run cross-document reconciliation."""
     _require(session_id)
     state = store.get(session_id)
-    docs = [DocumentExtraction(**d) for d in state.get("documents", {}).values()]
+    docs = _flatten_docs(state)
     issues, explanation = await reconcile_documents(session_id, docs)
     payload = {"reconciliation": {
         "issues": [i.model_dump() for i in issues], "explanation": explanation}}
@@ -196,7 +246,7 @@ async def compute(session_id: str) -> dict:
     """Consolidate documents and run the streamed computation pipeline."""
     _require(session_id)
     state = store.get(session_id)
-    docs = [DocumentExtraction(**d) for d in state.get("documents", {}).values()]
+    docs = _flatten_docs(state)
     profile = UserProfile(**state.get("profile", {}))
     form = ITRForm(state.get("decision", {}).get("form", ITRForm.ITR2.value))
 

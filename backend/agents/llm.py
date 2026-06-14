@@ -161,10 +161,14 @@ async def run_agent_stream(
         text = "".join(p.text or "" for p in event.content.parts)
         if not text:
             continue
-        if getattr(event, "partial", False):
+        # In ADK SSE mode non-final events are partial chunks; the final event
+        # is a complete copy of the response that we skip if we already streamed.
+        if not event.is_final_response():
             streamed += text
             yield text
-        elif event.is_final_response() and not streamed:
+        elif not streamed:
+            # Model didn't emit partials (non-streaming provider); yield whole.
+            streamed = text
             yield text
     elapsed_ms = round((time.perf_counter() - start) * 1000)
     logger.info("agent stream complete", extra={

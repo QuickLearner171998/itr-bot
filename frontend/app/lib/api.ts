@@ -13,6 +13,9 @@ export const api = {
   createSession: () =>
     fetch(`${API_BASE}/api/session`, { method: "POST" }).then(jsonOrThrow),
 
+  getState: (sid: string) =>
+    fetch(`${API_BASE}/api/session/${sid}/state`).then(jsonOrThrow),
+
   getQuestionnaire: () =>
     fetch(`${API_BASE}/api/questionnaire`).then(jsonOrThrow),
 
@@ -39,8 +42,8 @@ export const api = {
     }).then(jsonOrThrow);
   },
 
-  reviewDocument: (sid: string, docType: string, edits: Record<string, any>) =>
-    fetch(`${API_BASE}/api/session/${sid}/documents/${docType}/review`, {
+  reviewDocument: (sid: string, docType: string, edits: Record<string, any>, index = 0) =>
+    fetch(`${API_BASE}/api/session/${sid}/documents/${docType}/review?index=${index}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(edits),
@@ -90,14 +93,16 @@ export const api = {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      const frames = buffer.split("\n\n");
+      // SSE allows both \n and \r\n line endings; normalise to \n.
+      const normalised = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      const frames = normalised.split("\n\n");
       buffer = frames.pop() || "";
       for (const frame of frames) {
         let event = "message";
         let data = "";
         for (const line of frame.split("\n")) {
           if (line.startsWith("event:")) event = line.slice(6).trim();
-          else if (line.startsWith("data:")) data += line.slice(5).trim();
+          else if (line.startsWith("data:")) data = line.slice(5).trim();
         }
         if (!data) continue;
         let parsed: any = {};

@@ -8,6 +8,9 @@ import {
   useRef,
   useState,
 } from "react";
+
+// Must mirror _MULTI_UPLOAD_TYPES in backend/app/routes.py
+const MULTI_UPLOAD_TYPES = new Set(["form16", "form16a", "broker_pnl", "interest_cert", "donation_80g"]);
 import { api } from "./api";
 import type {
   ComputeStep,
@@ -41,6 +44,7 @@ interface SessionState {
   verification: { verified: boolean; note: string } | null;
   busy: boolean;
   start: () => Promise<string>;
+  restoreSession: (sid: string) => void;
   setBusy: (b: boolean) => void;
   setComputation: (c: TaxComputation) => void;
   resetCompute: () => void;
@@ -106,7 +110,17 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         });
         break;
       case "doc.completed":
-        if (d.extraction) setExtractions((s) => ({ ...s, [d.doc_type]: d.extraction }));
+        if (d.extraction) {
+          if (MULTI_UPLOAD_TYPES.has(d.doc_type)) {
+            setExtractions((s) => {
+              const prev = s[d.doc_type];
+              const arr = Array.isArray(prev) ? prev : prev ? [prev] : [];
+              return { ...s, [d.doc_type]: [...arr, d.extraction] };
+            });
+          } else {
+            setExtractions((s) => ({ ...s, [d.doc_type]: d.extraction }));
+          }
+        }
         break;
       case "recon.flag":
         pushActivity("flag", ev.message || "");
@@ -153,6 +167,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     return session_id;
   };
 
+  const restoreSession = (sid: string) => setSessionId(sid);
+
   const resetCompute = () => {
     setComputeSteps([]);
     setComputation(null);
@@ -163,9 +179,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<SessionState>(
     () => ({
       sessionId, activity, liveDocs, extractions, reconFlags, computeSteps,
-      computation, verification, busy, start, setBusy, setComputation, resetCompute,
+      computation, verification, busy, start, restoreSession, setBusy, setComputation, resetCompute,
     }),
-    [sessionId, activity, liveDocs, extractions, reconFlags, computeSteps, computation, verification, busy]
+    [sessionId, activity, liveDocs, extractions, reconFlags, computeSteps, computation, verification, busy] // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

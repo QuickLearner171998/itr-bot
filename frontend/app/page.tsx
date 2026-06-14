@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { api } from "./lib/api";
 import { AgentPanel } from "./components/AgentPanel";
 import { Checklist } from "./components/Checklist";
 import { Guided } from "./components/Guided";
@@ -11,17 +12,69 @@ import { Stepper } from "./components/Stepper";
 import { Upload } from "./components/Upload";
 import { useSession } from "./lib/session";
 
+const RESUME_KEY = "itr_session_resume";
+
+function loadResume(): { sessionId: string; step: number; intake: any } | null {
+  try {
+    const raw = localStorage.getItem(RESUME_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveResume(sessionId: string, step: number, intake: any) {
+  try {
+    localStorage.setItem(RESUME_KEY, JSON.stringify({ sessionId, step, intake }));
+  } catch { /* ignore */ }
+}
+
+function clearResume() {
+  try { localStorage.removeItem(RESUME_KEY); } catch { /* ignore */ }
+}
+
 export default function Home() {
-  const { sessionId, start } = useSession();
+  const { sessionId, start, restoreSession } = useSession();
   const [step, setStep] = useState(0);
   const [intake, setIntake] = useState<any>(null);
   const [starting, setStarting] = useState(false);
+  const [resumePrompt, setResumePrompt] = useState<{ sessionId: string; step: number; intake: any } | null>(null);
+
+  // On first mount: check if a prior session exists and the backend still has it.
+  useEffect(() => {
+    const saved = loadResume();
+    if (!saved || saved.step < 1) return;
+    api.getState(saved.sessionId)
+      .then(() => setResumePrompt(saved))
+      .catch(() => clearResume());
+  }, []);
+
+  // Persist whenever step / intake changes (after a session is active).
+  useEffect(() => {
+    if (sessionId && step >= 1) saveResume(sessionId, step, intake);
+  }, [sessionId, step, intake]);
+
+  const navigate = (s: number) => setStep(s);
 
   const begin = async () => {
+    clearResume();
     setStarting(true);
     await start();
     setStep(1);
     setStarting(false);
+  };
+
+  const resume = () => {
+    if (!resumePrompt) return;
+    restoreSession(resumePrompt.sessionId);
+    setIntake(resumePrompt.intake);
+    setStep(resumePrompt.step);
+    setResumePrompt(null);
+  };
+
+  const startFresh = () => {
+    clearResume();
+    setResumePrompt(null);
   };
 
   if (step === 0 || !sessionId) {
@@ -36,10 +89,23 @@ export default function Home() {
             statements with AI document intelligence, run a deterministic, independently
             verified tax computation, and guide you screen-by-screen on the portal.
           </p>
-          <button className="btn" onClick={begin} disabled={starting}>
-            {starting ? <span className="spinner" /> : null}
-            {starting ? "Starting..." : "Start filing assistant"}
-          </button>
+
+          {resumePrompt && (
+            <div className="resume-banner">
+              <span>You have a session in progress (step {resumePrompt.step} of 6).</span>
+              <div className="resume-actions">
+                <button className="btn" onClick={resume}>Resume where I left off</button>
+                <button className="btn ghost" onClick={startFresh}>Start fresh</button>
+              </div>
+            </div>
+          )}
+
+          {!resumePrompt && (
+            <button className="btn" onClick={begin} disabled={starting}>
+              {starting ? <span className="spinner" /> : null}
+              {starting ? "Starting..." : "Start filing assistant"}
+            </button>
+          )}
 
           <div className="feature-grid">
             <div className="card feature">
@@ -73,7 +139,7 @@ export default function Home() {
             sessionId={sessionId}
             onDone={(r) => {
               setIntake(r);
-              setStep(2);
+              navigate(2);
             }}
           />
         );
@@ -83,8 +149,8 @@ export default function Home() {
             decision={intake.decision}
             checklist={intake.checklist}
             summary={intake.summary}
-            onBack={() => setStep(1)}
-            onNext={() => setStep(3)}
+            onBack={() => navigate(1)}
+            onNext={() => navigate(3)}
           />
         );
       case 3:
@@ -92,16 +158,16 @@ export default function Home() {
           <Upload
             checklist={intake.checklist}
             sessionId={sessionId}
-            onBack={() => setStep(2)}
-            onNext={() => setStep(4)}
+            onBack={() => navigate(2)}
+            onNext={() => navigate(4)}
           />
         );
       case 4:
-        return <Reconcile sessionId={sessionId} onBack={() => setStep(3)} onNext={() => setStep(5)} />;
+        return <Reconcile sessionId={sessionId} onBack={() => navigate(3)} onNext={() => navigate(5)} />;
       case 5:
-        return <Results sessionId={sessionId} onBack={() => setStep(4)} onNext={() => setStep(6)} />;
+        return <Results sessionId={sessionId} onBack={() => navigate(4)} onNext={() => navigate(6)} />;
       case 6:
-        return <Guided sessionId={sessionId} onBack={() => setStep(5)} />;
+        return <Guided sessionId={sessionId} onBack={() => navigate(5)} />;
       default:
         return null;
     }
