@@ -11,9 +11,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import uuid
+from collections.abc import AsyncIterator
 
 from google.adk.agents import LlmAgent
+from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.runners import InMemoryRunner
 from google.genai import types
@@ -77,6 +80,12 @@ async def run_agent(agent: LlmAgent, prompt: str,
                        extra={"agent": agent.name})
         return ""
 
+    model_id = getattr(agent.model, "model", "?")
+    logger.info("agent run start", extra={
+        "agent": agent.name, "model": model_id,
+        "prompt_chars": len(prompt), "images": len(images or [])})
+    logger.debug("agent prompt", extra={"agent": agent.name, "prompt": prompt[:2000]})
+
     runner = InMemoryRunner(agent=agent, app_name=_APP_NAME)
     user_id = "local"
     session_id = uuid.uuid4().hex
@@ -88,13 +97,78 @@ async def run_agent(agent: LlmAgent, prompt: str,
         parts.append(types.Part.from_bytes(data=img, mime_type=image_mime))
     message = types.Content(role="user", parts=parts)
 
+    start = time.perf_counter()
     final_text = ""
     async for event in runner.run_async(
         user_id=user_id, session_id=session_id, new_message=message):
         if event.is_final_response() and event.content and event.content.parts:
             final_text = "".join(p.text or "" for p in event.content.parts)
-    logger.info("agent run complete", extra={"agent": agent.name, "chars": len(final_text)})
+    elapsed_ms = round((time.perf_counter() - start) * 1000)
+    logger.info("agent run complete", extra={
+        "agent": agent.name, "model": model_id, "chars": len(final_text),
+        "elapsed_ms": elapsed_ms})
+    logger.debug("agent response", extra={"agent": agent.name, "response": final_text[:2000]})
     return final_text
+
+
+async def run_agent_stream(
+    agent: LlmAgent, prompt: str,
+    images: list[bytes] | None = None,
+    image_mime: str = "image/png",
+) -> AsyncIterator[str]:
+    """Run an agent and yield response text deltas as they arrive.
+
+    Uses ADK SSE streaming so callers can forward partial tokens to a UI. If the
+    model emits only a final (non-partial) response, that full text is yielded
+    once at the end. Yields nothing when no API key is configured.
+
+    Args:
+        agent: The ADK agent to execute.
+        prompt: The user prompt text.
+        images: Optional image bytes for vision tasks.
+        image_mime: MIME type for the supplied images.
+
+    Yields:
+        Incremental text chunks of the agent's response.
+    """
+    if not os.environ.get("OPENAI_API_KEY"):
+        logger.warning("no OPENAI_API_KEY set; stream yielding nothing",
+                       extra={"agent": agent.name})
+        return
+
+    model_id = getattr(agent.model, "model", "?")
+    logger.info("agent stream start", extra={
+        "agent": agent.name, "model": model_id, "prompt_chars": len(prompt)})
+
+    runner = InMemoryRunner(agent=agent, app_name=_APP_NAME)
+    user_id = "local"
+    session_id = uuid.uuid4().hex
+    await runner.session_service.create_session(
+        app_name=_APP_NAME, user_id=user_id, session_id=session_id)
+
+    parts: list[types.Part] = [types.Part.from_text(text=prompt)]
+    for img in images or []:
+        parts.append(types.Part.from_bytes(data=img, mime_type=image_mime))
+    message = types.Content(role="user", parts=parts)
+
+    start = time.perf_counter()
+    streamed = ""
+    async for event in runner.run_async(
+        user_id=user_id, session_id=session_id, new_message=message,
+        run_config=RunConfig(streaming_mode=StreamingMode.SSE)):
+        if not (event.content and event.content.parts):
+            continue
+        text = "".join(p.text or "" for p in event.content.parts)
+        if not text:
+            continue
+        if getattr(event, "partial", False):
+            streamed += text
+            yield text
+        elif event.is_final_response() and not streamed:
+            yield text
+    elapsed_ms = round((time.perf_counter() - start) * 1000)
+    logger.info("agent stream complete", extra={
+        "agent": agent.name, "chars": len(streamed), "elapsed_ms": elapsed_ms})
 
 
 def parse_json(text: str) -> dict:

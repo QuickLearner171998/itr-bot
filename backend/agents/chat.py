@@ -8,8 +8,10 @@ prompt to keep it simple.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 from ..app.config import settings
-from .llm import build_agent, run_agent
+from .llm import build_agent, run_agent, run_agent_stream
 
 _INSTRUCTION = (
     "You are the help assistant for 'ITR Assist', a website that helps salaried "
@@ -43,9 +45,31 @@ async def answer(message: str, history: list[dict] | None = None) -> str:
     """
     agent = build_agent(name="help_chat", model_id=settings.chat_model,
                         instruction=_INSTRUCTION)
+    return await run_agent(agent, _build_prompt(message, history))
+
+
+def _build_prompt(message: str, history: list[dict] | None) -> str:
+    """Fold recent turns and the new message into a single prompt string."""
     convo = ""
     for turn in (history or [])[-6:]:
         role = "User" if turn.get("role") == "user" else "Assistant"
         convo += f"{role}: {turn.get('content', '')}\n"
-    prompt = f"{convo}User: {message}\nAssistant:"
-    return await run_agent(agent, prompt)
+    return f"{convo}User: {message}\nAssistant:"
+
+
+async def answer_stream(
+    message: str, history: list[dict] | None = None
+) -> AsyncIterator[str]:
+    """Stream the assistant's reply as incremental text chunks.
+
+    Args:
+        message: The user's latest message.
+        history: Optional recent turns as ``{"role", "content"}`` dicts.
+
+    Yields:
+        Response text deltas suitable for live UI rendering.
+    """
+    agent = build_agent(name="help_chat", model_id=settings.chat_model,
+                        instruction=_INSTRUCTION)
+    async for chunk in run_agent_stream(agent, _build_prompt(message, history)):
+        yield chunk

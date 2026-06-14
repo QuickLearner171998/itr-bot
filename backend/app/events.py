@@ -33,11 +33,14 @@ class EventBus:
 
     async def publish(self, event: StreamEvent) -> None:
         """Broadcast an event to all subscribers of its session."""
+        subscribers = len(self._subscribers.get(event.session_id, ()))
         logger.info(
             "stream event",
-            extra={"event_type": event.type.value, "event_data": event.data,
-                   "event_msg": event.message, "evt_session": event.session_id},
+            extra={"event_type": event.type.value, "event_msg": event.message,
+                   "subscribers": subscribers},
         )
+        logger.debug("stream event payload",
+                     extra={"event_type": event.type.value, "event_data": event.data})
         for queue in list(self._subscribers.get(event.session_id, ())):
             await queue.put(event)
 

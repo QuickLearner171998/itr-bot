@@ -14,6 +14,7 @@ from fastapi import APIRouter, Body, File, Form, HTTPException, Request, UploadF
 from sse_starlette.sse import EventSourceResponse
 
 from ..agents.chat import answer as chat_answer
+from ..agents.chat import answer_stream as chat_answer_stream
 from ..agents.doc_intel.extract import extract_document
 from ..agents.guidance import build_guided_filing, guidance_intro
 from ..agents.intake import (
@@ -66,6 +67,42 @@ async def chat(payload: dict = Body(...)) -> dict:
     history = payload.get("history") or []
     reply = await chat_answer(message, history)
     return {"reply": reply or "Sorry, I could not generate a reply right now."}
+
+
+@router.post("/chat/stream")
+async def chat_stream(payload: dict = Body(...)) -> EventSourceResponse:
+    """Stream a chat reply token-by-token over SSE.
+
+    Emits ``status`` (thinking), ``delta`` (text chunks), and ``done`` events;
+    ``error`` is emitted if generation fails.
+    """
+    message = str(payload.get("message", "")).strip()
+    history = payload.get("history") or []
+
+    async def gen():
+        if not message:
+            yield {"event": "delta", "data": json.dumps(
+                {"text": "Ask me anything about filing your ITR or using this site."})}
+            yield {"event": "done", "data": "{}"}
+            return
+        yield {"event": "status", "data": json.dumps({"state": "thinking"})}
+        produced = False
+        try:
+            async for chunk in chat_answer_stream(message, history):
+                if chunk:
+                    produced = True
+                    yield {"event": "delta", "data": json.dumps({"text": chunk})}
+        except Exception:
+            logger.exception("chat stream failed")
+            yield {"event": "error", "data": json.dumps(
+                {"text": "Sorry, I hit an error. Please try again."})}
+            return
+        if not produced:
+            yield {"event": "delta", "data": json.dumps(
+                {"text": "Sorry, I could not generate a reply right now."})}
+        yield {"event": "done", "data": "{}"}
+
+    return EventSourceResponse(gen())
 
 
 @router.get("/session/{session_id}/state")

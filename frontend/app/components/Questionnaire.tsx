@@ -9,10 +9,13 @@ interface Props {
   sessionId: string;
 }
 
+const STORAGE_KEY = "itr_questionnaire_answers";
+
 export function Questionnaire({ onDone, sessionId }: Props) {
   const [sections, setSections] = useState<QSection[]>([]);
   const [answers, setAnswers] = useState<Record<string, any>>({});
   const [submitting, setSubmitting] = useState(false);
+  const [restored, setRestored] = useState(false);
 
   useEffect(() => {
     api.getQuestionnaire().then((r) => {
@@ -27,9 +30,23 @@ export function Questionnaire({ onDone, sessionId }: Props) {
           }
         })
       );
-      setAnswers(defaults);
+      let saved: Record<string, any> = {};
+      try {
+        saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+      } catch {
+        saved = {};
+      }
+      const merged = { ...defaults, ...saved };
+      setAnswers(merged);
+      if (Object.keys(saved).length > 0) setRestored(true);
     });
   }, []);
+
+  useEffect(() => {
+    if (Object.keys(answers).length > 0) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(answers));
+    }
+  }, [answers]);
 
   const set = (id: string, v: any) => setAnswers((a) => ({ ...a, [id]: v }));
 
@@ -56,6 +73,33 @@ export function Questionnaire({ onDone, sessionId }: Props) {
         checklist, and tailor the computation. Not sure about something? Pick
         "Not sure" and we will figure it out from your documents. Nothing is filed yet.
       </p>
+
+      {restored && (
+        <div className="restored-note">
+          Restored your previous answers.
+          <button
+            type="button"
+            className="link-btn"
+            onClick={() => {
+              localStorage.removeItem(STORAGE_KEY);
+              setRestored(false);
+              const defaults: Record<string, any> = {};
+              sections.forEach((s) =>
+                s.questions.forEach((q) => {
+                  if (q.type === "bool") {
+                    defaults[q.id] = q.extractable ? "unsure" : false;
+                  } else {
+                    defaults[q.id] = q.default ?? (q.type === "number" ? 0 : "");
+                  }
+                })
+              );
+              setAnswers(defaults);
+            }}
+          >
+            Reset
+          </button>
+        </div>
+      )}
 
       {sections.map((s) => (
         <div className="q-section" key={s.section}>

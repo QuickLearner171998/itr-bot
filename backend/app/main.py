@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+import time
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
@@ -20,6 +22,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log every HTTP request with method, path, status, and duration."""
+    start = time.perf_counter()
+    logger.info("request start", extra={
+        "method": request.method, "path": request.url.path})
+    response = await call_next(request)
+    elapsed_ms = round((time.perf_counter() - start) * 1000)
+    logger.info("request done", extra={
+        "method": request.method, "path": request.url.path,
+        "status": response.status_code, "elapsed_ms": elapsed_ms})
+    return response
+
+
 app.include_router(router)
 
 

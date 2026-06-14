@@ -25,11 +25,13 @@ export function ChatWidget() {
   ]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [status, setStatus] = useState<string>("");
+  const [streaming, setStreaming] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, open]);
+  }, [messages, open, status, streaming]);
 
   const send = async (text: string) => {
     const q = text.trim();
@@ -38,16 +40,56 @@ export function ChatWidget() {
     setMessages((m) => [...m, { role: "user", content: q }]);
     setInput("");
     setSending(true);
+    setStatus("thinking");
+    setStreaming(false);
+
+    let started = false;
+    const startAssistant = () => {
+      if (started) return;
+      started = true;
+      setStatus("");
+      setStreaming(true);
+      setMessages((m) => [...m, { role: "assistant", content: "" }]);
+    };
+    const appendToLast = (text: string) =>
+      setMessages((m) => {
+        const copy = [...m];
+        const last = copy[copy.length - 1];
+        if (last && last.role === "assistant") {
+          copy[copy.length - 1] = { ...last, content: last.content + text };
+        }
+        return copy;
+      });
+
     try {
-      const { reply } = await api.chat(q, history);
-      setMessages((m) => [...m, { role: "assistant", content: reply }]);
+      await api.chatStream(q, history, {
+        onStatus: (s) => setStatus(s),
+        onDelta: (t) => {
+          startAssistant();
+          appendToLast(t);
+        },
+        onError: (t) => {
+          startAssistant();
+          appendToLast(t);
+        },
+      });
+      if (!started) {
+        setMessages((m) => [
+          ...m,
+          { role: "assistant", content: "Sorry, I could not generate a reply right now." },
+        ]);
+      }
     } catch {
-      setMessages((m) => [
-        ...m,
-        { role: "assistant", content: "Sorry, I hit an error. Please try again." },
-      ]);
+      if (!started) {
+        setMessages((m) => [
+          ...m,
+          { role: "assistant", content: "Sorry, I hit an error. Please try again." },
+        ]);
+      }
     } finally {
       setSending(false);
+      setStreaming(false);
+      setStatus("");
     }
   };
 
@@ -67,14 +109,23 @@ export function ChatWidget() {
             <span className="pulse" /> ITR Assist Helper
           </div>
           <div className="chat-body" ref={bodyRef}>
-            {messages.map((m, i) => (
-              <div key={i} className={`chat-msg ${m.role}`}>
-                {m.content}
-              </div>
-            ))}
-            {sending && (
-              <div className="chat-msg assistant">
-                <span className="spinner" style={{ borderTopColor: "var(--accent)" }} />
+            {messages.map((m, i) => {
+              const isLast = i === messages.length - 1;
+              return (
+                <div key={i} className={`chat-msg ${m.role}`}>
+                  {m.content}
+                  {m.role === "assistant" && isLast && streaming && (
+                    <span className="stream-cursor" />
+                  )}
+                </div>
+              );
+            })}
+            {sending && status === "thinking" && (
+              <div className="chat-msg assistant thinking">
+                <span className="dot" />
+                <span className="dot" />
+                <span className="dot" />
+                <span className="thinking-label">Thinking...</span>
               </div>
             )}
             {messages.length <= 1 && (

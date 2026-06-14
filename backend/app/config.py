@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     logs_dir: Path = REPO_ROOT / "backend" / "_data" / "logs"
     db_path: Path = REPO_ROOT / "backend" / "_data" / "itr.db"
 
+    # Logging. ``log_level`` controls verbosity (DEBUG shows live agent prompts,
+    # event payloads, and request timings). ``log_pretty`` renders a human-readable
+    # console line; the file handler always stays JSON for offline grep.
+    log_level: str = "DEBUG"
+    log_pretty: bool = True
+
     # Server / CORS.
     cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
