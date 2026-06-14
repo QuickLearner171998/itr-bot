@@ -17,8 +17,9 @@ logger = get_logger(__name__)
 
 # Allow additional origins from the CORS_ORIGINS environment variable so the
 # Vercel frontend URL can be added at deploy time without a code change.
+_base_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
 _extra = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
-_all_origins = list(dict.fromkeys(settings.cors_origins + _extra))
+_all_origins = list(dict.fromkeys(_base_origins + _extra))
 
 app = FastAPI(title="ITR Salaried Filler Bot", version="1.0.0")
 app.add_middleware(

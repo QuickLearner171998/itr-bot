@@ -51,11 +51,6 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_pretty: bool = False  # JSON only in production (easier to grep in Render logs)
 
-    # Server / CORS. Add your Vercel frontend URL to CORS_ORIGINS env var
-    # (comma-separated) when deploying, e.g.:
-    #   CORS_ORIGINS=https://itr-bot.vercel.app,https://your-custom-domain.com
-    cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
-
     # Extraction cache TTL in seconds (default 7 days). Set to 0 to disable.
     extraction_cache_ttl: int = 7 * 24 * 3600
 
