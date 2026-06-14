@@ -122,6 +122,7 @@ async def extract_document(
     data: bytes,
     mime: str = "application/pdf",
     password: str | None = None,
+    upload_id: str | None = None,
 ) -> DocumentExtraction:
     """Extract, self-critique, validate, and stream one document.
 
@@ -132,13 +133,17 @@ async def extract_document(
         data: Raw file bytes.
         mime: MIME type ("application/pdf" or an image type).
         password: Optional password (e.g. AIS PDF).
+        upload_id: Unique id for this uploaded file; echoed on every emitted
+            event so the UI can track concurrent uploads of the same doc type
+            independently.
 
     Returns:
         The validated ``DocumentExtraction``.
     """
     spec = DOC_REGISTRY[doc_type]
+    ev = {"doc_type": doc_type.value, "upload_id": upload_id}
     await bus.emit(session_id, EventType.DOC_STARTED, f"Reading {spec.title}...",
-                   doc_type=doc_type.value, filename=filename)
+                   filename=filename, **ev)
 
     images: list[bytes] = []
     text = ""
@@ -153,7 +158,7 @@ async def extract_document(
 
     await bus.emit(session_id, EventType.AGENT_STEP,
                    f"Extracting fields from {spec.title} with {settings.extraction_model}...",
-                   doc_type=doc_type.value)
+                   **ev)
     extractor = _extractor_agent(doc_type)
     response = await run_agent(extractor, source_block,
                                images=images, image_mime="image/png")
@@ -166,7 +171,7 @@ async def extract_document(
             break
         await bus.emit(session_id, EventType.AGENT_STEP,
                        f"Self-critique pass {attempt + 1} on {spec.title}...",
-                       doc_type=doc_type.value)
+                       **ev)
         critic = _critic_agent(doc_type)
         critique_prompt = f"{source_block}\n\nCANDIDATE JSON:\n{response}"
         response = await run_agent(critic, critique_prompt,
@@ -181,9 +186,9 @@ async def extract_document(
     for field in fields:
         await bus.emit(
             session_id, EventType.DOC_FIELD, None,
-            doc_type=doc_type.value, name=field.name, label=field.label,
+            name=field.name, label=field.label,
             value=field.value, confidence=field.confidence,
-            source_hint=field.source_hint, flagged=field.flagged)
+            source_hint=field.source_hint, flagged=field.flagged, **ev)
 
     extraction = DocumentExtraction(
         doc_type=doc_type, filename=filename, fields=fields, status="extracted")
@@ -196,11 +201,11 @@ async def extract_document(
 
     await bus.emit(session_id, EventType.DOC_VALIDATED,
                    f"{spec.title}: {extraction.status} (confidence {extraction.overall_confidence:.0%})",
-                   doc_type=doc_type.value, status=extraction.status,
+                   status=extraction.status,
                    confidence=extraction.overall_confidence,
-                   issues=[i.model_dump() for i in extraction.issues])
+                   issues=[i.model_dump() for i in extraction.issues], **ev)
     await bus.emit(session_id, EventType.DOC_COMPLETED, None,
-                   doc_type=doc_type.value, extraction=extraction.model_dump())
+                   extraction=extraction.model_dump(), **ev)
     logger.info("document extracted", extra={
         "doc_type": doc_type.value, "confidence": extraction.overall_confidence,
         "status": extraction.status})

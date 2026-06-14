@@ -30,12 +30,14 @@ export const api = {
     sid: string,
     docType: string,
     file: File,
-    password?: string
+    password?: string,
+    uploadId?: string
   ) => {
     const form = new FormData();
     form.append("doc_type", docType);
     form.append("file", file);
     if (password) form.append("password", password);
+    if (uploadId) form.append("upload_id", uploadId);
     return fetch(`${API_BASE}/api/session/${sid}/documents`, {
       method: "POST",
       body: form,

@@ -8,9 +8,11 @@ work intact.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import uuid
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,7 @@ class SessionStore:
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
+        self._doc_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -77,6 +80,32 @@ class SessionStore:
                 (json.dumps(state, default=str), session_id),
             )
         return state
+
+    async def add_document(
+        self, session_id: str, doc_type: str, extraction: dict[str, Any], multi: bool
+    ) -> None:
+        """Persist a finished extraction, serialising concurrent writers.
+
+        Multiple documents extract in parallel background tasks, so the
+        read-modify-write of the ``documents`` blob is guarded by a per-session
+        lock to prevent lost updates. ``multi`` types accumulate in a list;
+        single types overwrite.
+
+        Args:
+            session_id: Owning session.
+            doc_type: Document type value (the storage key).
+            extraction: Serialised ``DocumentExtraction``.
+            multi: Whether this doc type supports multiple uploads.
+        """
+        async with self._doc_locks[session_id]:
+            state = self.get(session_id)
+            docs = state.get("documents", {})
+            if multi:
+                slot = docs.get(doc_type)
+                docs[doc_type] = (slot + [extraction]) if isinstance(slot, list) else [extraction]
+            else:
+                docs[doc_type] = extraction
+            self.update(session_id, {"documents": docs})
 
     def upload_dir(self, session_id: str) -> Path:
         """Return (creating if needed) the upload directory for a session."""

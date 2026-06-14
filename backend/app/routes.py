@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, Request, UploadFile
 from sse_starlette.sse import EventSourceResponse
@@ -48,6 +49,9 @@ from .store import store
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api")
+
+# Strong references to in-flight background extraction tasks (prevents GC).
+_bg_tasks: set[asyncio.Task] = set()
 
 
 def _require(session_id: str) -> None:
@@ -162,31 +166,50 @@ async def upload_document(
     doc_type: str = Form(...),
     file: UploadFile = File(...),
     password: str | None = Form(default=None),
+    upload_id: str | None = Form(default=None),
 ) -> dict:
-    """Upload and extract one document (progress streams over SSE)."""
+    """Accept a document and start extraction in the background.
+
+    The file is persisted immediately and extraction is scheduled as a
+    background task so the client can keep uploading without waiting. Progress
+    and the final result stream over SSE, tagged with ``upload_id`` so the UI
+    tracks concurrent uploads of the same doc type independently.
+    """
     _require(session_id)
     dtype = DocType(doc_type)
+    upload_id = upload_id or uuid.uuid4().hex[:12]
     data = await file.read()
-    store.upload_dir(session_id).joinpath(file.filename or dtype.value).write_bytes(data)
+    filename = file.filename or dtype.value
+    store.upload_dir(session_id).joinpath(filename).write_bytes(data)
 
-    extraction = await extract_document(
-        session_id, dtype, file.filename or dtype.value, data,
-        mime=file.content_type or "application/pdf", password=password)
+    task = asyncio.create_task(_extract_and_store(
+        session_id, dtype, filename, data,
+        file.content_type or "application/pdf", password, upload_id))
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
 
-    state = store.get(session_id)
-    docs = state.get("documents", {})
-    # Multi-upload doc types are stored as lists; single-upload types as a dict.
-    if dtype in _MULTI_UPLOAD_TYPES:
-        slot = docs.get(dtype.value)
-        if isinstance(slot, list):
-            slot.append(extraction.model_dump())
-        else:
-            slot = [extraction.model_dump()]
-        docs[dtype.value] = slot
-    else:
-        docs[dtype.value] = extraction.model_dump()
-    store.update(session_id, {"documents": docs})
-    return extraction.model_dump()
+    return {"upload_id": upload_id, "doc_type": dtype.value, "status": "queued"}
+
+
+async def _extract_and_store(
+    session_id: str, dtype: DocType, filename: str, data: bytes,
+    mime: str, password: str | None, upload_id: str,
+) -> None:
+    """Run extraction for one uploaded file and persist the result."""
+    session_id_var.set(session_id)
+    try:
+        extraction = await extract_document(
+            session_id, dtype, filename, data,
+            mime=mime, password=password, upload_id=upload_id)
+        await store.add_document(
+            session_id, dtype.value, extraction.model_dump(),
+            multi=dtype in _MULTI_UPLOAD_TYPES)
+    except Exception:
+        logger.exception("background extraction failed",
+                         extra={"doc_type": dtype.value, "upload_id": upload_id})
+        await bus.emit(session_id, EventType.ERROR,
+                       f"Extraction failed for {dtype.value}. Please retry.",
+                       doc_type=dtype.value, upload_id=upload_id)
 
 
 @router.post("/session/{session_id}/documents/{doc_type}/review")

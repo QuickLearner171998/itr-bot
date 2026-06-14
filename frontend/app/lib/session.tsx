@@ -27,17 +27,20 @@ interface Activity {
 }
 
 interface LiveDoc {
+  uploadId: string;
+  docType: string;
   status: string;
   confidence: number;
   fields: Record<string, ExtractedField>;
   issues: { severity: string; message: string }[];
+  extraction?: DocumentExtraction;
 }
 
 interface SessionState {
   sessionId: string | null;
   activity: Activity[];
   liveDocs: Record<string, LiveDoc>;
-  extractions: Record<string, DocumentExtraction>;
+  extractions: Record<string, DocumentExtraction | DocumentExtraction[]>;
   reconFlags: { severity: string; message: string }[];
   computeSteps: ComputeStep[];
   computation: TaxComputation | null;
@@ -56,7 +59,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [activity, setActivity] = useState<Activity[]>([]);
   const [liveDocs, setLiveDocs] = useState<Record<string, LiveDoc>>({});
-  const [extractions, setExtractions] = useState<Record<string, DocumentExtraction>>({});
+  const [extractions, setExtractions] = useState<Record<string, DocumentExtraction | DocumentExtraction[]>>({});
   const [reconFlags, setReconFlags] = useState<{ severity: string; message: string }[]>([]);
   const [computeSteps, setComputeSteps] = useState<ComputeStep[]>([]);
   const [computation, setComputation] = useState<TaxComputation | null>(null);
@@ -77,19 +80,28 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       case "info":
         pushActivity("info", ev.message || "");
         break;
-      case "doc.started":
+      case "doc.started": {
         pushActivity("info", ev.message || "");
+        const key = d.upload_id || d.doc_type;
         setLiveDocs((s) => ({
           ...s,
-          [d.doc_type]: { status: "extracting", confidence: 0, fields: {}, issues: [] },
+          [key]: {
+            uploadId: key, docType: d.doc_type, status: "extracting",
+            confidence: 0, fields: {}, issues: [],
+          },
         }));
         break;
-      case "doc.field.extracted":
+      }
+      case "doc.field.extracted": {
+        const key = d.upload_id || d.doc_type;
         setLiveDocs((s) => {
-          const doc = s[d.doc_type] || { status: "extracting", confidence: 0, fields: {}, issues: [] };
+          const doc = s[key] || {
+            uploadId: key, docType: d.doc_type, status: "extracting",
+            confidence: 0, fields: {}, issues: [],
+          };
           return {
             ...s,
-            [d.doc_type]: {
+            [key]: {
               ...doc,
               fields: {
                 ...doc.fields,
@@ -102,26 +114,43 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
           };
         });
         break;
-      case "doc.validated":
+      }
+      case "doc.validated": {
         pushActivity("info", ev.message || "");
+        const key = d.upload_id || d.doc_type;
         setLiveDocs((s) => {
-          const doc = s[d.doc_type] || { status: "", confidence: 0, fields: {}, issues: [] };
-          return { ...s, [d.doc_type]: { ...doc, status: d.status, confidence: d.confidence, issues: d.issues || [] } };
+          const doc = s[key] || {
+            uploadId: key, docType: d.doc_type, status: "",
+            confidence: 0, fields: {}, issues: [],
+          };
+          return {
+            ...s,
+            [key]: { ...doc, status: d.status, confidence: d.confidence, issues: d.issues || [] },
+          };
         });
         break;
-      case "doc.completed":
-        if (d.extraction) {
-          if (MULTI_UPLOAD_TYPES.has(d.doc_type)) {
-            setExtractions((s) => {
-              const prev = s[d.doc_type];
-              const arr = Array.isArray(prev) ? prev : prev ? [prev] : [];
-              return { ...s, [d.doc_type]: [...arr, d.extraction] };
-            });
-          } else {
-            setExtractions((s) => ({ ...s, [d.doc_type]: d.extraction }));
-          }
+      }
+      case "doc.completed": {
+        if (!d.extraction) break;
+        const key = d.upload_id || d.doc_type;
+        setLiveDocs((s) => {
+          const doc = s[key] || {
+            uploadId: key, docType: d.doc_type, status: d.extraction.status,
+            confidence: d.extraction.overall_confidence, fields: {}, issues: [],
+          };
+          return { ...s, [key]: { ...doc, status: d.extraction.status, extraction: d.extraction } };
+        });
+        if (MULTI_UPLOAD_TYPES.has(d.doc_type)) {
+          setExtractions((s) => {
+            const prev = s[d.doc_type];
+            const arr = Array.isArray(prev) ? prev : prev ? [prev] : [];
+            return { ...s, [d.doc_type]: [...arr, d.extraction] };
+          });
+        } else {
+          setExtractions((s) => ({ ...s, [d.doc_type]: d.extraction }));
         }
         break;
+      }
       case "recon.flag":
         pushActivity("flag", ev.message || "");
         setReconFlags((f) => [...f, { severity: d.severity, message: ev.message || "" }]);

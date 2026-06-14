@@ -25,7 +25,7 @@ export function Reconcile({ sessionId, onNext, onBack }: Props) {
     });
   }, [sessionId]);
 
-  const docs = Object.values(extractions);
+  const docs = Object.values(extractions).flatMap((v) => (Array.isArray(v) ? v : [v]));
 
   return (
     <div className="card">
@@ -42,10 +42,10 @@ export function Reconcile({ sessionId, onNext, onBack }: Props) {
         </div>
       ) : (
         <div className="extract-summary">
-          {docs.map((doc) => {
+          {docs.map((doc, di) => {
             const filled = doc.fields.filter((f) => f.value !== null && f.value !== "");
             return (
-              <div className="extract-summary-card" key={doc.doc_type}>
+              <div className="extract-summary-card" key={`${doc.doc_type}-${di}`}>
                 <div className="ess-head">
                   <span className="ess-title">
                     {docIcon(doc.doc_type)} {doc.filename || doc.doc_type}
