@@ -332,7 +332,12 @@ function UploadTile({
               <>
                 {fields.map((f) => (
                   <div className="field-row" key={f.name}>
-                    <span className="fl" title={f.source_hint || ""}>{f.label}</span>
+                    <span className="fl">
+                      {f.label}
+                      {f.source_hint && (
+                        <span className="field-source-hint">{f.source_hint}</span>
+                      )}
+                    </span>
                     <span className="fv">
                       {extraction ? (
                         <input
