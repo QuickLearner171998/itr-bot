@@ -28,8 +28,6 @@ class Settings(BaseSettings):
     # tasks use the strongest reasoning model; lighter prose tasks use the mini.
     # All overridable via environment variables / .env.
     extraction_model: str = "openai/gpt-5-mini"
-    validation_model: str = "openai/gpt-5-mini"
-    sanity_check_model: str = "openai/gpt-5-mini"
     orchestration_model: str = "openai/gpt-5-mini"
     chat_model: str = "openai/gpt-5-mini"
 

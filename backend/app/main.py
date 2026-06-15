@@ -57,7 +57,6 @@ def health() -> dict:
         "financial_year": settings.financial_year,
         "models": {
             "extraction": settings.extraction_model,
-            "validation": settings.validation_model,
             "orchestration": settings.orchestration_model,
         },
         "openai_key_set": bool(settings.openai_api_key),
