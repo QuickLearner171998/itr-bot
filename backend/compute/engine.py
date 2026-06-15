@@ -277,6 +277,79 @@ def _agri_adjusted_slab_tax(
     return max(0.0, tax_with - tax_agri)
 
 
+def _emit_deduction_steps(
+    steps: list[ComputeStep], ti: TaxInput, regime: str,
+    salary_for_nps: float, gti_normal: float
+) -> None:
+    """Append individual Chapter VI-A deduction lines to ``steps``.
+
+    Mirrors the logic in ``_deductions_for_regime`` but emits one
+    ``ComputeStep`` per non-zero component so the UI shows the full breakup.
+    """
+    d = ti.deductions
+    is_senior = ti.age >= K.SENIOR_AGE
+
+    def _s(key: str, label: str, amount: float) -> None:
+        if amount > 0:
+            steps.append(ComputeStep(key=key, label=f"  {label}", amount=amount, kind="subtract"))
+
+    if regime == "new":
+        cap = salary_for_nps * K.EMPLOYER_NPS_CAP_RATE
+        _s("80ccd2", "80CCD(2) Employer NPS", min(d.amount_80ccd2, cap))
+        return
+
+    # Old regime — full Chapter VI-A.
+    eighty_c_base = min(d.amount_80c + d.home_loan_principal, K.CAP_80C)
+    _s("80c", f"80C (incl. ELSS/PPF/LIC/home loan principal; cap ₹{int(K.CAP_80C):,})", eighty_c_base)
+
+    _s("80ccd1b", f"80CCD(1B) NPS Self (cap ₹{int(K.CAP_80CCD1B):,})",
+       min(d.amount_80ccd1b, K.CAP_80CCD1B))
+
+    employer_nps = min(d.amount_80ccd2, salary_for_nps * K.EMPLOYER_NPS_CAP_RATE_OLD)
+    _s("80ccd2", "80CCD(2) Employer NPS", employer_nps)
+
+    cap_self = K.CAP_80D_SELF_SENIOR if is_senior else K.CAP_80D_SELF
+    eighty_d_self = min(d.amount_80d_self, cap_self)
+    _s("80d_self", f"80D Health Insurance — Self/Family (cap ₹{int(cap_self):,})", eighty_d_self)
+    eighty_d_par = min(d.amount_80d_parents, K.CAP_80D_PARENTS)
+    _s("80d_parents", f"80D Health Insurance — Parents (cap ₹{int(K.CAP_80D_PARENTS):,})", eighty_d_par)
+
+    savings = ti.savings_interest
+    tta_cap = K.CAP_80TTB if is_senior else K.CAP_80TTA
+    deposit_base = (savings + ti.fd_interest) if is_senior else savings
+    eighty_tt = min(deposit_base, tta_cap)
+    tta_label = f"80TTB Interest (Senior; cap ₹{int(tta_cap):,})" if is_senior else f"80TTA Savings Interest (cap ₹{int(tta_cap):,})"
+    _s("80tta", tta_label, eighty_tt)
+
+    _s("80e", "80E Education Loan Interest (no cap)", d.amount_80e)
+    _s("80eea", f"80EEA Additional Home Loan Interest (cap ₹{int(K.CAP_80EEA):,})",
+       min(d.amount_80eea, K.CAP_80EEA))
+
+    if d.amount_80dd > 0:
+        dd_amt = K.CAP_80DD_SEVERE if d.amount_80dd_severe else K.CAP_80DD_NORMAL
+        _s("80dd", f"80DD Disabled Dependent ({'severe' if d.amount_80dd_severe else 'normal'})", dd_amt)
+
+    if d.amount_80u > 0:
+        u_amt = K.CAP_80U_SEVERE if d.amount_80u_severe else K.CAP_80U_NORMAL
+        _s("80u", f"80U Self Disability ({'severe' if d.amount_80u_severe else 'normal'})", u_amt)
+
+    _s("80ddb", "80DDB Specified Disease Treatment",
+       min(d.amount_80ddb, K.CAP_80DDB_SENIOR if is_senior else K.CAP_80DDB_NORMAL))
+
+    if d.amount_80gg > 0 and _hra_exemption(ti) <= 0:
+        eighty_gg = max(0.0, min(
+            K.CAP_80GG_ANNUAL,
+            K.RATE_80GG_INCOME * gti_normal,
+            d.amount_80gg - K.RATE_80GG_RENT_MINUS_INCOME * gti_normal))
+        _s("80gg", "80GG Rent Paid (no HRA received)", eighty_gg)
+
+    base = (eighty_c_base + min(d.amount_80ccd1b, K.CAP_80CCD1B) + employer_nps
+            + eighty_d_self + eighty_d_par + eighty_tt + d.amount_80e
+            + min(d.amount_80eea, K.CAP_80EEA))
+    eighty_g = _donation_80g(d, max(0.0, gti_normal - base))
+    _s("80g", "80G Donations", eighty_g)
+
+
 def compute_regime(ti: TaxInput, regime: str) -> RegimeResult:
     """Compute a fully traced tax result for one regime.
 
@@ -294,19 +367,35 @@ def compute_regime(ti: TaxInput, regime: str) -> RegimeResult:
     professional_tax = sum(s.professional_tax for s in ti.salaries)
     std_ded = K.NEW_STANDARD_DEDUCTION if regime == "new" else K.OLD_STANDARD_DEDUCTION
 
+    hra_exemption = 0.0
     if regime == "new":
-        exempt = 0.0          # HRA/LTA and most Sec 10 exemptions disallowed
-        professional_tax = 0.0  # 16(iii) not allowed in new regime
+        exempt = 0.0
+        professional_tax = 0.0
     else:
-        exempt += _hra_exemption(ti)  # HRA not already exempted in Form 16
+        hra_exemption = _hra_exemption(ti)
+        exempt += hra_exemption
 
     net_salary = max(0.0, gross_salary - exempt - std_ded - professional_tax)
+
+    # Show per-employer breakdown when there are multiple Form 16s.
+    if len(ti.salaries) > 1:
+        steps.append(ComputeStep(key="salary_header", label="— Salary Income —", amount=0, kind="info"))
+        for i, s in enumerate(ti.salaries):
+            steps.append(ComputeStep(
+                key=f"salary_{i}", label=f"  {s.employer_name or f'Employer {i+1}'} (Gross)",
+                amount=s.gross_salary, kind="add"))
     steps.append(ComputeStep(key="gross_salary", label="Gross Salary", amount=gross_salary, kind="add"))
     if exempt:
-        steps.append(ComputeStep(key="exempt", label="Less: Exempt Allowances (Sec 10)", amount=exempt, kind="subtract"))
-    steps.append(ComputeStep(key="std_ded", label="Less: Standard Deduction", amount=std_ded, kind="subtract"))
+        if hra_exemption and exempt != hra_exemption:
+            steps.append(ComputeStep(key="exempt_allowances", label="  Less: Exempt Allowances (HRA/LTA etc.)", amount=exempt - hra_exemption, kind="subtract"))
+            steps.append(ComputeStep(key="hra_exemption", label="  Less: HRA Exemption u/s 10(13A)", amount=hra_exemption, kind="subtract"))
+        elif hra_exemption:
+            steps.append(ComputeStep(key="hra_exemption", label="  Less: HRA Exemption u/s 10(13A)", amount=hra_exemption, kind="subtract"))
+        else:
+            steps.append(ComputeStep(key="exempt", label="  Less: Exempt Allowances (Sec 10)", amount=exempt, kind="subtract"))
+    steps.append(ComputeStep(key="std_ded", label="  Less: Standard Deduction", amount=std_ded, kind="subtract"))
     if professional_tax:
-        steps.append(ComputeStep(key="ptax", label="Less: Professional Tax", amount=professional_tax, kind="subtract"))
+        steps.append(ComputeStep(key="ptax", label="  Less: Professional Tax u/s 16(iii)", amount=professional_tax, kind="subtract"))
     steps.append(ComputeStep(key="net_salary", label="Income from Salary", amount=net_salary, kind="total"))
 
     hp_income = _house_property(ti, regime)
@@ -318,13 +407,29 @@ def compute_regime(ti: TaxInput, regime: str) -> RegimeResult:
     fp_deduction = min(fp * K.FAMILY_PENSION_DED_RATE, fp_cap) if fp else 0.0
     other_sources = (ti.savings_interest + ti.fd_interest + ti.interest_on_bonds
                      + ti.dividend + ti.interest_on_it_refund + ti.other_income + fp)
-    stcg_other = ti.capital_gains.stcg_other  # slab-rate, part of normal income
+    stcg_other = ti.capital_gains.stcg_other
+
     if other_sources:
-        steps.append(ComputeStep(key="other_sources", label="Income from Other Sources", amount=other_sources, kind="add"))
+        steps.append(ComputeStep(key="other_sources_header", label="— Income from Other Sources —", amount=0, kind="info"))
+        if ti.savings_interest:
+            steps.append(ComputeStep(key="savings_interest", label="  Savings Interest", amount=ti.savings_interest, kind="add"))
+        if ti.fd_interest:
+            steps.append(ComputeStep(key="fd_interest", label="  FD / Deposit Interest", amount=ti.fd_interest, kind="add"))
+        if ti.interest_on_bonds:
+            steps.append(ComputeStep(key="bond_interest", label="  Interest on Bonds / Debentures", amount=ti.interest_on_bonds, kind="add"))
+        if ti.dividend:
+            steps.append(ComputeStep(key="dividend", label="  Dividend Income", amount=ti.dividend, kind="add"))
+        if ti.interest_on_it_refund:
+            steps.append(ComputeStep(key="it_refund_interest", label="  Interest on IT Refund (Sec 244A)", amount=ti.interest_on_it_refund, kind="add"))
+        if fp:
+            steps.append(ComputeStep(key="family_pension", label="  Family Pension", amount=fp, kind="add"))
+        if ti.other_income:
+            steps.append(ComputeStep(key="other_income", label="  Other Income", amount=ti.other_income, kind="add"))
+        steps.append(ComputeStep(key="other_sources", label="Income from Other Sources", amount=other_sources, kind="total"))
     if fp_deduction:
-        steps.append(ComputeStep(key="fp_ded", label="Less: Family Pension Deduction (Sec 57)", amount=fp_deduction, kind="subtract"))
+        steps.append(ComputeStep(key="fp_ded", label="  Less: Family Pension Deduction (Sec 57)", amount=fp_deduction, kind="subtract"))
     if stcg_other:
-        steps.append(ComputeStep(key="stcg_other", label="STCG (slab rate)", amount=stcg_other, kind="add"))
+        steps.append(ComputeStep(key="stcg_other", label="STCG — slab rate (other than 111A)", amount=stcg_other, kind="add"))
 
     gti_normal = net_salary + hp_income + other_sources - fp_deduction + stcg_other
 
@@ -340,7 +445,9 @@ def compute_regime(ti: TaxInput, regime: str) -> RegimeResult:
     deductions = _deductions_for_regime(ti, regime, gross_salary, gti_normal)
     deductions = min(deductions, max(0.0, gti_normal))
     if deductions:
-        steps.append(ComputeStep(key="chvia", label="Less: Chapter VI-A Deductions", amount=deductions, kind="subtract"))
+        steps.append(ComputeStep(key="chvia_header", label="— Chapter VI-A Deductions —", amount=0, kind="info"))
+        _emit_deduction_steps(steps, ti, regime, gross_salary, gti_normal)
+        steps.append(ComputeStep(key="chvia", label="Total Deductions (Chapter VI-A)", amount=deductions, kind="subtract"))
 
     normal_income = _round_to_ten(max(0.0, gti_normal - deductions))
     steps.append(ComputeStep(key="total_income", label="Taxable Income (slab)", amount=normal_income, kind="total"))
@@ -353,6 +460,17 @@ def compute_regime(ti: TaxInput, regime: str) -> RegimeResult:
     special_income = (ti.capital_gains.stcg_111a + ti.capital_gains.ltcg_112a
                       + ti.capital_gains.ltcg_other + ti.capital_gains.vda_gain)
     total_income = normal_income + special_income
+
+    if special_income:
+        steps.append(ComputeStep(key="cg_header", label="— Capital Gains (special rates) —", amount=0, kind="info"))
+        if ti.capital_gains.stcg_111a:
+            steps.append(ComputeStep(key="stcg_111a", label="  STCG u/s 111A (listed equity, 20%)", amount=ti.capital_gains.stcg_111a, kind="add"))
+        if ti.capital_gains.ltcg_112a:
+            steps.append(ComputeStep(key="ltcg_112a", label=f"  LTCG u/s 112A (listed equity; ₹{int(K.LTCG_112A_EXEMPTION):,} exempt, 12.5%)", amount=ti.capital_gains.ltcg_112a, kind="add"))
+        if ti.capital_gains.ltcg_other:
+            steps.append(ComputeStep(key="ltcg_other", label="  LTCG other (Sec 112, 12.5%)", amount=ti.capital_gains.ltcg_other, kind="add"))
+        if ti.capital_gains.vda_gain:
+            steps.append(ComputeStep(key="vda", label="  VDA / Crypto Gains (flat 30%)", amount=ti.capital_gains.vda_gain, kind="add"))
 
     steps.append(ComputeStep(key="slab_tax", label="Tax on Slab Income", amount=slab_tax, kind="tax"))
     if cg["total"]:

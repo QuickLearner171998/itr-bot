@@ -280,6 +280,7 @@ input.field:focus, select.field:focus { border-color: var(--accent); }
 .wf-row .wv { font-size: 13px; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
 .wf-row.is-total { font-weight: 700; }
 .wf-row.is-total .wl { color: var(--text); font-weight: 700; }
+.wf-section-header { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); margin-top: 10px; margin-bottom: 2px; padding-bottom: 4px; border-bottom: 1px solid rgba(255,255,255,0.07); }
 
 /* Regime compare */
 .regime-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 18px 0; }

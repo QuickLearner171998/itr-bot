@@ -42,6 +42,13 @@ export function Results({ sessionId, onNext, onBack }: Props) {
           <div className="activity-empty">Starting deterministic engine...</div>
         )}
         {computeSteps.map((s, i) => {
+          if (s.kind === "info") {
+            return (
+              <div className="wf-section-header" key={`${s.key}-${i}`}>
+                {s.label}
+              </div>
+            );
+          }
           const cls =
             s.kind === "subtract" ? "wf-subtract" : s.kind === "tax" ? "wf-tax" : s.kind === "total" ? "wf-total" : "wf-add";
           return (

@@ -165,7 +165,7 @@ def test_hra_not_double_counted_when_employer_already_exempted():
     ti = consolidate(docs, age=30)
     assert ti.hra_received == 0.0  # not recomputed; employer exemption stands
     res = compute_regime(ti, "old")
-    exempt = next(s for s in res.steps if s.key == "exempt")
+    exempt = next(s for s in res.steps if s.key in ("exempt", "exempt_allowances", "hra_exemption"))
     assert round(exempt.amount) == 200000  # only the Form 16 exemption, not doubled
 
 
@@ -237,7 +237,7 @@ def test_hra_exemption_old_regime():
                   hra_received=240000, hra_rent_paid=300000, hra_basic_da=1000000,
                   hra_is_metro=True)
     res = compute_regime(ti, "old")
-    exempt = next(s for s in res.steps if s.key == "exempt")
+    exempt = next(s for s in res.steps if s.key == "hra_exemption")
     assert round(exempt.amount) == 200000
 
 
@@ -245,7 +245,7 @@ def test_hra_not_allowed_new_regime():
     ti = TaxInput(salaries=[SalaryComponent(gross_salary=1500000)],
                   hra_received=240000, hra_rent_paid=300000, hra_basic_da=1000000)
     res = compute_regime(ti, "new")
-    assert not any(s.key == "exempt" for s in res.steps)
+    assert not any(s.key in ("exempt", "hra_exemption") for s in res.steps)
 
 
 def test_let_out_house_property_30pct_deduction():
