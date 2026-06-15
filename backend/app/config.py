@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     chat_model: str = "openai/gpt-5-mini"
 
     # Reasoning effort hint forwarded to reasoning-capable models.
-    extraction_reasoning_effort: str = "medium"
+    extraction_reasoning_effort: str = "high"
 
     # Doc-intelligence self-critique loop bound.
     max_extraction_retries: int = 1
