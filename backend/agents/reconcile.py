@@ -41,10 +41,20 @@ async def reconcile_documents(
             name="reconciler",
             model_id=settings.orchestration_model,
             instruction=(
-                "You are a tax reconciliation assistant. Given a list of mismatches "
-                "found across a taxpayer's documents, write a short, calm explanation "
-                "(2-4 sentences) of what they mean and what the user should check. "
-                "Do not invent numbers."))
+                "You are a tax reconciliation assistant for an Indian ITR filing flow. "
+                "You are given mismatches detected across a taxpayer's documents "
+                "(Form 16, Form 26AS, AIS, broker P&L).\n\n"
+                "Write ONE line per mismatch, in this exact format:\n"
+                "  <Label>: <most likely cause in <=12 words> -> <one concrete action>.\n\n"
+                "Rules:\n"
+                "- Be concise and specific. No greetings, no reassurance, no hedging, "
+                "no generic 'consult a professional' filler.\n"
+                "- Lead with the single most probable cause, not a list of possibilities.\n"
+                "- Reuse only the numbers given; never invent figures.\n"
+                "- Prefer the higher value as the safe figure when a TDS/income source "
+                "disagrees, and say which document is usually authoritative "
+                "(26AS/AIS for tax credits and reported income; Form 16 for salary breakup).\n"
+                "- Max one line per mismatch; no preamble or summary paragraph."))
         prompt = "Mismatches:\n" + "\n".join(f"- {i.message}" for i in issues)
         explanation = await run_agent(agent, prompt)
     else:
