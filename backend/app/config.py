@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     # Reasoning effort hint forwarded to reasoning-capable models.
     extraction_reasoning_effort: str = "high"
 
+    # Fixed sampling seed for reproducible extraction/computation across runs.
+    # OpenAI honours this best-effort so identical documents yield identical
+    # extractions (avoids tax swinging between runs). Override via env if needed.
+    llm_seed: int = 42
+
     # Doc-intelligence self-critique loop bound.
     max_extraction_retries: int = 1
 

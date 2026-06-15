@@ -49,8 +49,9 @@ def make_model(model_id: str, reasoning_effort: str | None = None) -> LiteLlm:
         A configured ``LiteLlm`` instance.
     """
     if _is_reasoning_model(model_id):
-        return LiteLlm(model=model_id, reasoning_effort=reasoning_effort or "high")
-    return LiteLlm(model=model_id, temperature=0.0)
+        return LiteLlm(model=model_id, reasoning_effort=reasoning_effort or "high",
+                       seed=settings.llm_seed)
+    return LiteLlm(model=model_id, temperature=0.0, seed=settings.llm_seed)
 
 
 def build_agent(name: str, instruction: str, model_id: str,
