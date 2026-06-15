@@ -15,4 +15,4 @@ services:
       - key: LOG_PRETTY
         value: "false"
       - key: EXTRACTION_CACHE_TTL
-        value: "3600"        # 1-hour in-process cache; /tmp is ephemeral but helps within a session
+        value: "0"           # disabled: never serve stale extractions (fixes always take effect)
