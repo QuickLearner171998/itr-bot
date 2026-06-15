@@ -132,10 +132,23 @@ def consolidate_detailed(
             taxable_salary=_num(v.get("taxable_salary")),
             tds=tds,
         ))
-        f16_80c = max(f16_80c, _num(v.get("deduction_80c")))
-        f16_80ccd1b = max(f16_80ccd1b, _num(v.get("deduction_80ccd1b")))
-        f16_80ccd2 = max(f16_80ccd2, _num(v.get("deduction_80ccd2")))
-        f16_80d = max(f16_80d, _num(v.get("deduction_80d")))
+        # Hard caps on each deduction: the statutory maximum acts as a guard
+        # against the model reading the wrong row in a Chapter VI-A table.
+        f16_80c = max(f16_80c, min(_num(v.get("deduction_80c")), 150000.0))      # Sec 80C cap
+        f16_80ccd1b = max(f16_80ccd1b, min(_num(v.get("deduction_80ccd1b")), 50000.0))  # Sec 80CCD(1B) cap
+        f16_80ccd2 = max(f16_80ccd2, _num(v.get("deduction_80ccd2")))            # no fixed cap; engine applies %
+        # 80D capped at ₹50,000 (senior citizen max) to guard against model
+        # misreading the 80C row (₹1,50,000) as the 80D row.
+        f16_80d = max(f16_80d, min(_num(v.get("deduction_80d")), 50000.0))
+
+        # Implausibility guard: TDS cannot exceed gross salary.
+        if tds > gross * 1.05:
+            discrepancies.append(Discrepancy(
+                field="tds", label="TDS Implausibly High vs Gross Salary",
+                sources=[{"doc": str(v.get("employer_name") or "Form 16"), "value": tds}],
+                chosen=tds,
+                note=(f"Extracted TDS ({tds:,.0f}) exceeds gross salary ({gross:,.0f}). "
+                      "Please verify the TDS figure — it may have been read from the wrong line.")))
 
     # Deduction proofs (override if larger).
     proof_80c = proof_80ccd1b = proof_80d_self = proof_80d_parents = 0.0

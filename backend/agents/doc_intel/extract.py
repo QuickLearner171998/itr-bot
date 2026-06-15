@@ -83,6 +83,7 @@ def _render_pdf_images(data: bytes, password: str | None, max_pages: int = 3) ->
     return out
 
 
+
 @lru_cache(maxsize=None)
 def _extractor_agent(doc_type: DocType):
     """Single-pass agent that extracts and self-critiques in one LLM call.
@@ -138,6 +139,87 @@ def _to_fields(doc_type: DocType, parsed: dict) -> list[ExtractedField]:
     return fields
 
 
+_FIELD_RULES: dict[DocType, dict[str, tuple[float, float]]] = {
+    # doc_type -> {field_name: (min_valid, max_valid)}
+    DocType.FORM16: {
+        "deduction_80c":    (0, 150000),
+        "deduction_80ccd1b": (0, 50000),
+        "deduction_80d":    (0, 50000),
+        "standard_deduction": (0, 75001),
+        "professional_tax": (0, 2500),
+    },
+}
+
+
+def _is_suspicious(doc_type: DocType, field: ExtractedField) -> bool:
+    """Return True if the field value violates a known statutory range.
+
+    Args:
+        doc_type: Document type being validated.
+        field: The extracted field to check.
+
+    Returns:
+        True when the value is outside the allowed range.
+    """
+    if field.value in (None, ""):
+        return False
+    rules = _FIELD_RULES.get(doc_type, {})
+    if field.name not in rules:
+        return False
+    lo, hi = rules[field.name]
+    try:
+        v = float(str(field.value).replace(",", "").replace("₹", "").strip())
+    except (ValueError, TypeError):
+        return False
+    return not (lo <= v <= hi)
+
+
+def _verify_source_hints(fields: list[ExtractedField], doc_text: str) -> list[ExtractedField]:
+    """Penalise fields whose source_hint text cannot be found in the document.
+
+    When the model extracts a value it invents (proximity-bias hallucination),
+    the source_hint it fabricates typically also won't match any span in the
+    actual document text. A simple substring check catches the most egregious
+    cases and lowers confidence so the field is flagged for human review.
+
+    Args:
+        fields: Extracted fields with source hints.
+        doc_text: The raw document text used for extraction.
+
+    Returns:
+        The same list with adjusted confidence / flagged status where grounding
+        fails.
+    """
+    if not doc_text:
+        return fields
+    text_lower = doc_text.lower()
+    updated: list[ExtractedField] = []
+    for f in fields:
+        hint = (f.source_hint or "").strip().lower()
+        # Only verify numeric fields with a non-trivial hint that's more than
+        # a generic label. Skip null/absent values.
+        if f.value in (None, "") or not hint or len(hint) < 6:
+            updated.append(f)
+            continue
+        # Extract key words from the hint and check at least one appears.
+        # We don't require the full hint (OCR noise / formatting differences)
+        # but at least 1 distinctive word should appear in the document.
+        hint_words = [w for w in hint.split() if len(w) > 4
+                      and w not in {"from", "table", "total", "column", "section",
+                                    "value", "part", "amount", "deduction"}]
+        if hint_words and not any(w in text_lower for w in hint_words):
+            # Source hint not grounded — penalise confidence and flag.
+            new_confidence = min(f.confidence, 0.55)
+            updated.append(ExtractedField(
+                name=f.name, label=f.label, value=f.value,
+                confidence=new_confidence,
+                source_hint=f.source_hint + " [unverified — hint not found in document]",
+                flagged=True))
+        else:
+            updated.append(f)
+    return updated
+
+
 async def extract_document(
     session_id: str,
     doc_type: DocType,
@@ -190,23 +272,48 @@ async def extract_document(
     parsed = parse_json(response)
     fields = _to_fields(doc_type, parsed)
 
-    # Retry only if fields are still flagged after the combined extract+critique pass.
+    # Source-hint grounding check: fields whose hint text cannot be located in
+    # the document have their confidence reduced and are flagged for retry.
+    fields = _verify_source_hints(fields, text)
+
+    # Targeted single-field retry: instead of re-running the full extraction,
+    # ask the model to fix only the specific fields that are still uncertain.
+    # This focuses the model's attention and avoids re-introducing errors in
+    # already-correct fields.
     for attempt in range(settings.max_extraction_retries):
-        if not any(f.flagged for f in fields):
+        flagged = [f for f in fields if f.flagged and f.value not in (None, "")]
+        # Also include fields that failed business-rule sanity checks.
+        suspicious = [f for f in fields if _is_suspicious(doc_type, f)]
+        targets = {f.name: f for f in flagged + suspicious}
+        if not targets:
             break
+        target_list = "\n".join(
+            f"  - {f.name} (current value: {f.value}, confidence: {f.confidence:.2f}, "
+            f"issue: {'unverified source' if '[unverified' in (f.source_hint or '') else 'low confidence'})"
+            for f in targets.values())
         await bus.emit(session_id, EventType.AGENT_STEP,
-                       f"Re-extraction pass {attempt + 1} on {spec.title}...",
+                       f"Targeted re-extraction pass {attempt + 1}: fixing {len(targets)} field(s) in {spec.title}...",
                        **ev)
         retry_prompt = (
-            f"{source_block}\n\nPREVIOUS ATTEMPT (has low-confidence fields — fix them):\n{response}")
-        response = await run_agent(extractor, retry_prompt,
-                                   images=images, image_mime="image/png")
-        new_parsed = parse_json(response)
-        if new_parsed:
-            parsed = new_parsed
+            f"{source_block}\n\n"
+            f"TARGETED FIX REQUIRED — re-read ONLY these fields from the source document:\n"
+            f"{target_list}\n\n"
+            f"For each field above, find the exact value in the document and explain where you found it. "
+            f"Return STRICT JSON: {{\"fields\": {{<name>: {{\"value\": <value>, "
+            f"\"confidence\": <0..1>, \"source_hint\": <exact text or table cell location>}}}}}}"
+        )
+        retry_response = await run_agent(extractor, retry_prompt,
+                                         images=images, image_mime="image/png")
+        retry_parsed = parse_json(retry_response)
+        if retry_parsed:
+            # Merge only the targeted fields back into parsed — leave others untouched.
+            merged_fields = parsed.get("fields", {})
+            for name, cell in (retry_parsed.get("fields") or {}).items():
+                if name in targets:
+                    merged_fields[name] = cell
+            parsed["fields"] = merged_fields
             fields = _to_fields(doc_type, parsed)
-
-    fields = _to_fields(doc_type, parsed)
+            fields = _verify_source_hints(fields, text)
 
     # Stream each field to the UI so the panel fills in live.
     for field in fields:

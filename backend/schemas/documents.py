@@ -114,6 +114,7 @@ DOC_REGISTRY: dict[DocType, DocSpec] = {
             "the taxable_salary field should include that consolidated amount."
         ),
         fields=[
+            # --- PART A (identity / period) — unambiguous, read first to anchor context ---
             FieldSpec(name="employer_name", label="Employer Name", type=FieldType.TEXT,
                       description="Name of the employer / deductor.", required=True),
             FieldSpec(name="employer_tan", label="Employer TAN", type=FieldType.TEXT,
@@ -122,42 +123,59 @@ DOC_REGISTRY: dict[DocType, DocSpec] = {
                       description="Start date of employment with this employer (dd/mm/yyyy or month name)."),
             FieldSpec(name="period_to", label="Employment To", type=FieldType.TEXT,
                       description="End date of employment with this employer (dd/mm/yyyy or month name)."),
-            FieldSpec(name="gross_salary", label="Gross Salary (Sec 17(1)+17(2)+17(3))",
-                      description="Total gross salary including perquisites and profits in lieu.",
-                      required=True),
+            FieldSpec(name="regime", label="Tax Regime Used by Employer", type=FieldType.TEXT,
+                      description="Whether employer computed under 'old' or 'new' regime."),
+            # --- PART B: Salary computation (top-to-bottom document order) ---
             FieldSpec(name="salary_17_1", label="Salary u/s 17(1)",
                       description="Basic salary, allowances and wages as per Sec 17(1)."),
             FieldSpec(name="perquisites_17_2", label="Perquisites u/s 17(2)",
                       description="Value of perquisites (rent-free accommodation, car, ESOP, etc.) as per Sec 17(2)."),
             FieldSpec(name="profits_in_lieu_17_3", label="Profits in Lieu of Salary u/s 17(3)",
                       description="Compensation on termination, ex-gratia, keyman insurance premium, etc."),
+            FieldSpec(name="gross_salary", label="Gross Salary (Sec 17(1)+17(2)+17(3))",
+                      description="Total gross salary = salary_17_1 + perquisites_17_2 + profits_in_lieu_17_3.",
+                      required=True),
             FieldSpec(name="exempt_allowances", label="Exempt Allowances u/s 10",
                       description="Total allowances exempt under section 10 (HRA, LTA, gratuity, leave encashment, etc.)."),
             FieldSpec(name="standard_deduction", label="Standard Deduction",
-                      description="Standard deduction u/s 16(ia)."),
+                      description="Standard deduction u/s 16(ia): ₹50,000 (old) or ₹75,000 (new)."),
             FieldSpec(name="professional_tax", label="Professional Tax u/s 16(iii)",
-                      description="Professional tax / tax on employment."),
+                      description="Professional tax / tax on employment (max ₹2,500/year)."),
             FieldSpec(name="taxable_salary", label="Net Taxable Salary",
                       description="Gross salary minus exempt allowances and Sec 16 deductions — the salary chargeable to tax."),
+            # --- PART B: Chapter VI-A Deductions (table rows in document order) ---
             FieldSpec(name="deduction_80c", label="Deduction u/s 80C",
-                      description="Use the 'Total deduction under section 80C, 80CCC and 80CCD(1)' line (often labeled (c) or (g)) from Part B Chapter VI-A — this is the capped consolidated amount (max ₹1,50,000), NOT the per-employer contribution line (d). This consolidated line correctly includes any carried-over amount from a previous employer."),
+                      description=(
+                          "Read the 'Total deduction under section 80C, 80CCC and 80CCD(1)' consolidated line "
+                          "(labeled (c) or (g)) from the Chapter VI-A table in Part B. "
+                          "This is the capped total (max ₹1,50,000) including any previous-employer carry-over. "
+                          "Do NOT use the per-employer line (d)."
+                      )),
             FieldSpec(name="deduction_80ccd1b", label="Deduction u/s 80CCD(1B) (NPS self)",
-                      description="NPS self-contribution deduction as per Part B Chapter VI-A table."),
+                      description=(
+                          "Additional NPS self-contribution u/s 80CCD(1B) from the Chapter VI-A table. "
+                          "Capped at ₹50,000. Separate from 80C."
+                      )),
             FieldSpec(name="deduction_80ccd2", label="Deduction u/s 80CCD(2) (Employer NPS)",
-                      description="Employer NPS contribution deduction as per Part B Chapter VI-A table."),
+                      description="Employer NPS contribution u/s 80CCD(2) from the Chapter VI-A table."),
             FieldSpec(name="deduction_80d", label="Deduction u/s 80D (Health Insurance)",
-                      description="Medical insurance premium deduction as per Part B Chapter VI-A table. Enter 0 if not present."),
+                      description=(
+                          "Health insurance premium u/s 80D from the Chapter VI-A table. "
+                          "This is ONLY the 80D row — NOT the 80C row above it. "
+                          "80D max is ₹25,000 (₹50,000 for senior citizens). "
+                          "If the value is ₹1,50,000 or more, you are reading the 80C row — re-read carefully. "
+                          "Enter 0 if the 80D row is absent or blank."
+                      )),
+            # --- TDS (bottom of Part B — read after salary context is established) ---
             FieldSpec(name="tds", label="Total TDS Deducted",
                       description=(
-                          "Total TDS deducted and deposited on salary. "
-                          "Look for the FINAL TDS line — labeled 'Total TDS Deducted', "
-                          "'Tax Deducted at Source', or 'Less: Tax deducted at source'. "
-                          "This equals Income Tax + Surcharge + Education Cess combined. "
-                          "Do NOT use the 'Income Tax' or 'Tax on total income' line alone "
-                          "(that is tax before cess). The correct value matches Form 26AS."
+                          "Total TDS deducted and deposited on salary (bottom of Part B). "
+                          "Look for the FINAL TDS line — 'Total TDS Deducted', 'Tax Deducted at Source', "
+                          "or 'Less: Tax deducted at source'. "
+                          "This = Income Tax + Surcharge + Education Cess (4%) combined. "
+                          "Do NOT use the 'Income Tax' / 'Tax on total income' line alone (that is pre-cess). "
+                          "The correct value matches Form 26AS Part A for this employer."
                       ), required=True),
-            FieldSpec(name="regime", label="Tax Regime Used by Employer", type=FieldType.TEXT,
-                      description="Whether employer computed under 'old' or 'new' regime."),
         ],
     ),
     DocType.FORM16A: DocSpec(

@@ -50,6 +50,16 @@ def validate_document(doc: DocumentExtraction) -> list[ValidationIssue]:
                 severity="warning",
                 message=f"Standard deduction {std:.0f} is not 50,000 (old) or 75,000 (new).",
                 fields=["standard_deduction"]))
+        d80d = _num(v.get("deduction_80d"))
+        if d80d > 50000:
+            issues.append(ValidationIssue(
+                severity="warning",
+                message=(
+                    f"80D deduction {d80d:,.0f} exceeds the maximum cap (₹50,000 for senior citizens, "
+                    f"₹25,000 otherwise). This may be a misread of the 80C row in Part B — "
+                    f"please verify and correct if needed."
+                ),
+                fields=["deduction_80d"]))
 
     if doc.doc_type == DocType.BROKER_PNL:
         for f in ("stcg_111a", "ltcg_112a", "stcg_other", "ltcg_other", "vda_gain"):
