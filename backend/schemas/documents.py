@@ -106,7 +106,12 @@ DOC_REGISTRY: dict[DocType, DocSpec] = {
             "total taxable income, tax computed, 87A rebate, and total TDS. "
             "The employer also states which regime (old/new) was used. "
             "Look carefully at both parts — period dates are in Part A, "
-            "perquisites and profits-in-lieu are often in Part B's salary table."
+            "perquisites and profits-in-lieu are often in Part B's salary table. "
+            "CRITICAL: For Chapter VI-A deductions (80C, 80CCD(1B), 80CCD(2), 80D), "
+            "always read from PART B of Form 16 (the 'Deductions under Chapter VI-A' table), "
+            "NOT from Part A investment declarations. Part B shows the final allowed deductions. "
+            "If this Form 16 consolidates income from a previous employer (shown as 'salary from other employer'), "
+            "the taxable_salary field should include that consolidated amount."
         ),
         fields=[
             FieldSpec(name="employer_name", label="Employer Name", type=FieldType.TEXT,
@@ -135,13 +140,13 @@ DOC_REGISTRY: dict[DocType, DocSpec] = {
             FieldSpec(name="taxable_salary", label="Net Taxable Salary",
                       description="Gross salary minus exempt allowances and Sec 16 deductions — the salary chargeable to tax."),
             FieldSpec(name="deduction_80c", label="Deduction u/s 80C",
-                      description="Aggregate 80C deduction reported by employer."),
+                      description="Use the 'Total deduction under section 80C, 80CCC and 80CCD(1)' line (often labeled (c) or (g)) from Part B Chapter VI-A — this is the capped consolidated amount (max ₹1,50,000), NOT the per-employer contribution line (d). This consolidated line correctly includes any carried-over amount from a previous employer."),
             FieldSpec(name="deduction_80ccd1b", label="Deduction u/s 80CCD(1B) (NPS self)",
-                      description="Additional NPS contribution deduction."),
+                      description="NPS self-contribution deduction as per Part B Chapter VI-A table."),
             FieldSpec(name="deduction_80ccd2", label="Deduction u/s 80CCD(2) (Employer NPS)",
-                      description="Employer contribution to NPS."),
+                      description="Employer NPS contribution deduction as per Part B Chapter VI-A table."),
             FieldSpec(name="deduction_80d", label="Deduction u/s 80D (Health Insurance)",
-                      description="Medical insurance premium deduction."),
+                      description="Medical insurance premium deduction as per Part B Chapter VI-A table. Enter 0 if not present."),
             FieldSpec(name="tds", label="Total TDS Deducted",
                       description="Total tax deducted at source on salary.", required=True),
             FieldSpec(name="regime", label="Tax Regime Used by Employer", type=FieldType.TEXT,
@@ -202,8 +207,11 @@ DOC_REGISTRY: dict[DocType, DocSpec] = {
             "PART A: General info (PAN, name, DOB) — skip. "
             "PART B has multiple sections — scan ALL of them: "
             "(1) TDS/TCS Information: rows of TDS/TCS deducted by various deductors. "
-            "   Sum TDS on salary rows → salary_reported. "
-            "   Sum TDS on interest rows → fd_interest or savings_interest. "
+            "   Sum TDS u/s 192 salary rows → salary_reported (use AMOUNT PAID column, not TDS column). "
+            "   IMPORTANT: Also look for 'TDS-Ann.II-SAL' section at the end (Part B7) — it shows each employer's "
+            "   gross salary separately; sum these for salary_reported. "
+            "   TDS u/s 194J or 194JA or 194JB (fees for professional/technical services) → professional_fees (sum all amounts). "
+            "   TDS u/s 194A / 194 interest rows → fd_interest or savings_interest. "
             "   TDS u/s 194S (virtual digital assets) → vda_tds. "
             "   TCS rows → tcs_total. "
             "(2) SFT Information (Specified Financial Transactions from banks/brokers/RTA): "
@@ -211,14 +219,14 @@ DOC_REGISTRY: dict[DocType, DocSpec] = {
             "   'Purchase of securities / units of mutual funds' → purchase_of_securities. "
             "   'Interest on deposits' → fd_interest. "
             "   'Interest on savings account' → savings_interest. "
+            "   Dividend income (SFT-015) → sum all amounts → dividend (prefer SFT total over TDS-section total as it covers all companies). "
             "(3) Payment of Taxes: Advance Tax → advance_tax; Self-Assessment Tax → self_assessment_tax. "
-            "(4) Other Information: "
-            "   Dividend from companies/MFs → dividend. "
+            "(4) Other Information (Part B7): "
             "   Interest on Income-Tax Refund (u/s 244A) → interest_on_it_refund. "
             "   Family pension → family_pension. "
             "   Rent received → rent_received. "
             "   Interest on bonds/debentures → interest_on_bonds. "
-            "Sum all TDS/TCS amounts for tds_total. "
+            "Sum all TDS amounts (excluding TCS) for tds_total. "
             "The AIS often shows both 'reported value' and 'modified value' — always use the MODIFIED value if present, otherwise use the reported value."
         ),
         fields=[
@@ -250,8 +258,10 @@ DOC_REGISTRY: dict[DocType, DocSpec] = {
                       description="Self-assessment tax as reflected in AIS."),
             FieldSpec(name="tcs_total", label="Total TCS",
                       description="Tax Collected at Source as reflected in AIS (e.g. TCS on car purchase, LRS remittances)."),
+            FieldSpec(name="professional_fees", label="Professional / Freelance Income (Sec 194J)",
+                      description="Total receipts from professional or technical services under Sec 194J/194JA/194JB (freelance, consulting, etc.). Sum all amounts paid by all deductors."),
             FieldSpec(name="tds_total", label="Total TDS Reported in AIS",
-                      description="Aggregate TDS as per AIS — use as cross-check against Form 26AS."),
+                      description="Aggregate TDS (excluding TCS) as per AIS — use as cross-check against Form 26AS."),
         ],
     ),
     DocType.BROKER_PNL: DocSpec(
