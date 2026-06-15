@@ -18,6 +18,7 @@ import io
 import shutil
 from functools import lru_cache
 
+import pdfplumber
 from pypdf import PdfReader
 
 from ...app.config import settings
@@ -64,6 +65,46 @@ def _read_pdf_text(data: bytes, password: str | None) -> str:
     return "\n".join((page.extract_text() or "") for page in reader.pages)
 
 
+def _extract_tables_as_text(data: bytes, password: str | None) -> str:
+    """Extract all tables from a PDF using pdfplumber and format them as labelled
+    row-column text.
+
+    pdfplumber preserves the geometric alignment of cells, meaning row labels
+    (e.g. "(g) 80D Health Insurance") stay attached to their corresponding
+    values. This pre-structured text replaces raw pypdf output for table-heavy
+    documents (Form 16, AIS), eliminating the row-misalignment hallucination
+    that occurs when an LLM reads flat text where column alignment is lost.
+
+    Returns empty string when pdfplumber finds no tables or the PDF is image-based.
+
+    Args:
+        data: Raw PDF bytes.
+        password: Optional decryption password.
+
+    Returns:
+        Human-readable table text with ``[Page N > Table M]`` section headers.
+    """
+    sections: list[str] = []
+    try:
+        with pdfplumber.open(io.BytesIO(data), password=password) as pdf:
+            for page_num, page in enumerate(pdf.pages, start=1):
+                tables = page.extract_tables()
+                for tbl_num, table in enumerate(tables, start=1):
+                    if not table:
+                        continue
+                    lines: list[str] = [f"[Page {page_num} > Table {tbl_num}]"]
+                    for row in table:
+                        cells = [str(c or "").replace("\n", " ").strip() for c in row]
+                        non_empty = [c for c in cells if c]
+                        if non_empty:
+                            lines.append("  " + " | ".join(cells))
+                    if len(lines) > 1:
+                        sections.append("\n".join(lines))
+    except Exception:
+        return ""
+    return "\n\n".join(sections)
+
+
 def _render_pdf_images(data: bytes, password: str | None, max_pages: int = 3) -> list[bytes]:
     """Render leading PDF pages to PNG bytes (only if poppler is available)."""
     if shutil.which("pdftoppm") is None:
@@ -103,15 +144,22 @@ def _extractor_agent(doc_type: DocType):
         f"{context_section}\n"
         f"Extract ONLY these fields:\n{field_lines}\n\n"
         "EXTRACTION RULES:\n"
+        "- When STRUCTURED TABLES are provided, use them as the primary source for "
+        "  numeric fields — they preserve row-column alignment exactly as in the document. "
+        "  Use RAW TEXT only for non-table fields (names, dates, regime, period).\n"
+        "- For table fields: read the row label first, then take the value from the "
+        "  correct column (prefer 'Deductible Amount' over 'Gross Amount' for deductions).\n"
         "- Money values are plain numbers (no commas/symbols).\n"
         "- SUM across multiple rows when the field description says to sum.\n"
         "- For AIS: prefer 'modified value' over 'reported value' when both exist.\n"
         "- If a field is genuinely absent, set value null and confidence 0.\n"
         "- Never guess; reflect uncertainty in a low confidence score.\n"
-        "\nSELF-CRITIQUE: After extracting, re-verify each value against the source — "
-        "correct any wrong values, fill missed fields, and adjust confidence scores. "
-        "Pay special attention to summing rows that should be aggregated and fields "
-        "that may appear in a different section of the document.\n"
+        "- source_hint must quote the exact table row label and column where the "
+        "  value was found (e.g. 'Page 4 > Table 1, row (g), Deductible Amount column').\n"
+        "\nSELF-CRITIQUE: After extracting, re-verify each numeric value against its "
+        "table row label — confirm the label matches the field you are extracting "
+        "(e.g. '80D' label for health insurance, not '80C' label for life insurance). "
+        "Correct any row-mismatches and adjust confidence scores.\n"
         "\nReturn STRICT JSON only: {\"fields\": {<name>: {\"value\": <number-or-string-or-null>, "
         "\"confidence\": <0..1>, \"source_hint\": <short where-found note>}}}. "
         "Output only the JSON object.")
@@ -252,16 +300,34 @@ async def extract_document(
 
     images: list[bytes] = []
     text = ""
+    table_text = ""
     if mime == "application/pdf":
         # Run blocking pypdf/pdf2image calls in a thread so concurrent extractions
         # don't starve each other on the async event loop.
-        text = await asyncio.to_thread(_read_pdf_text, data, password)
+        text, table_text = await asyncio.gather(
+            asyncio.to_thread(_read_pdf_text, data, password),
+            asyncio.to_thread(_extract_tables_as_text, data, password),
+        )
         if len(text.strip()) < 80:  # likely scanned -> need vision
             images = await asyncio.to_thread(_render_pdf_images, data, password)
     else:
         images = [data]
 
-    source_block = f"SOURCE TEXT:\n{text}" if text else "SOURCE: see attached image(s)."
+    # Build source block: table-structured text is prepended (highest fidelity),
+    # followed by full raw text as fallback context for non-table sections.
+    # The LLM sees clean row-column labels for table fields, eliminating the
+    # row-misalignment hallucination that occurs with raw flat text.
+    if table_text:
+        source_block = (
+            "STRUCTURED TABLES (row-column aligned — use these for table fields):\n"
+            f"{table_text}\n\n"
+            "RAW TEXT (for non-table context: dates, names, period, regime):\n"
+            f"{text}"
+        )
+    elif text:
+        source_block = f"SOURCE TEXT:\n{text}"
+    else:
+        source_block = "SOURCE: see attached image(s)."
 
     await bus.emit(session_id, EventType.AGENT_STEP,
                    f"Extracting fields from {spec.title} with {settings.extraction_model}...",
@@ -272,9 +338,9 @@ async def extract_document(
     parsed = parse_json(response)
     fields = _to_fields(doc_type, parsed)
 
-    # Source-hint grounding check: fields whose hint text cannot be located in
-    # the document have their confidence reduced and are flagged for retry.
-    fields = _verify_source_hints(fields, text)
+    # Source-hint grounding check: verify hints against all available text.
+    full_text = table_text + "\n" + text if table_text else text
+    fields = _verify_source_hints(fields, full_text)
 
     # Targeted single-field retry: instead of re-running the full extraction,
     # ask the model to fix only the specific fields that are still uncertain.
@@ -313,7 +379,7 @@ async def extract_document(
                     merged_fields[name] = cell
             parsed["fields"] = merged_fields
             fields = _to_fields(doc_type, parsed)
-            fields = _verify_source_hints(fields, text)
+            fields = _verify_source_hints(fields, full_text)
 
     # Stream each field to the UI so the panel fills in live.
     for field in fields:
