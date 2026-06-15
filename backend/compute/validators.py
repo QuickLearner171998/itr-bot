@@ -130,10 +130,21 @@ def validate_final_return(ti: TaxInput, form: ITRForm, profile: UserProfile) -> 
     total_income = (
         sum(s.gross_salary for s in ti.salaries)
         + ti.savings_interest + ti.fd_interest + ti.dividend + ti.other_income
-        + ti.family_pension
+        + ti.family_pension + ti.professional_fees
         + ti.house_property_income + ti.let_out_annual_rent
         + cg.stcg_111a + cg.ltcg_112a + cg.stcg_other + cg.ltcg_other + cg.vda_gain
     )
+
+    # Professional / freelance income requires ITR-2 or ITR-3 (not ITR-1).
+    if ti.professional_fees > 0:
+        issues.append(ValidationIssue(
+            severity="error" if form == ITRForm.ITR1 else "warning",
+            message=(
+                f"Professional / freelance income ₹{ti.professional_fees:,.0f} detected "
+                f"(Sec 194J from AIS). ITR-1 cannot be used — file ITR-2 or ITR-3. "
+                f"This income must be declared under 'Profits & Gains from Business/Profession'."
+            ),
+            fields=["professional_fees"]))
 
     if form == ITRForm.ITR1:
         if total_income > 5000000:

@@ -88,6 +88,10 @@ class TaxInput(BaseModel):
     hra_basic_da: float = 0.0
     hra_is_metro: bool = False
 
+    # Professional / freelance income (Sec 194J, 44ADA, etc.) detected from AIS.
+    # Presence of this income requires ITR-2 (not ITR-1) and is taxed at slab rates.
+    professional_fees: float = 0.0
+
     savings_interest: float = 0.0
     fd_interest: float = 0.0
     interest_on_bonds: float = 0.0    # interest on bonds/debentures/govt securities

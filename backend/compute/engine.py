@@ -428,10 +428,19 @@ def compute_regime(ti: TaxInput, regime: str) -> RegimeResult:
         steps.append(ComputeStep(key="other_sources", label="Income from Other Sources", amount=other_sources, kind="total"))
     if fp_deduction:
         steps.append(ComputeStep(key="fp_ded", label="  Less: Family Pension Deduction (Sec 57)", amount=fp_deduction, kind="subtract"))
+
+    # Professional / freelance income (Sec 194J) — taxed at slab rate.
+    # Requires ITR-2; shown as a separate income head.
+    prof_fees = ti.professional_fees
+    if prof_fees:
+        steps.append(ComputeStep(
+            key="prof_fees", label="Income from Professional Services (Sec 44ADA / PGBP)",
+            amount=prof_fees, kind="add"))
+
     if stcg_other:
         steps.append(ComputeStep(key="stcg_other", label="STCG — slab rate (other than 111A)", amount=stcg_other, kind="add"))
 
-    gti_normal = net_salary + hp_income + other_sources - fp_deduction + stcg_other
+    gti_normal = net_salary + hp_income + other_sources - fp_deduction + prof_fees + stcg_other
 
     # Brought-forward loss set-off (old regime) against gross total income.
     if regime == "old" and ti.brought_forward_loss > 0:

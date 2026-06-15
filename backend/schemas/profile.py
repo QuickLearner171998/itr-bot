@@ -66,6 +66,9 @@ class UserProfile(BaseModel):
     claims_80c: bool = False
     claims_80d: bool = False
 
+    # Professional / freelance income (Sec 44ADA / 194J) — disqualifies ITR-1.
+    has_professional_income: bool = False
+
     # Disqualifiers for ITR-1.
     is_company_director: bool = False
     has_foreign_assets_income: bool = False

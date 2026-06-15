@@ -114,7 +114,7 @@ def _independent_regime_total(ti: TaxInput, regime: str) -> float:
     fp_ded = min(fp * K.FAMILY_PENSION_DED_RATE, fp_cap) if fp else 0.0
     other = ti.savings_interest + ti.fd_interest + ti.dividend + ti.other_income + fp
     cg = ti.capital_gains
-    gti = net_salary + hp + other - fp_ded + cg.stcg_other
+    gti = net_salary + hp + other - fp_ded + ti.professional_fees + cg.stcg_other
     if regime == "old" and ti.brought_forward_loss > 0:
         gti -= min(ti.brought_forward_loss, max(0.0, gti))
 

@@ -218,14 +218,29 @@ def consolidate_detailed(
         donation_50_limit=don_50_l,
     )
 
+    # Professional / freelance income from AIS (Sec 194J receipts).
+    # Not present in Form 16; requires ITR-2.
+    ti.professional_fees = _num(ais.get("professional_fees"))
+
     # Cross-source salary check: Form 16 gross vs AIS salary_reported.
     # AIS salary is an employer-reported figure independent of Form 16 — a
     # mismatch can mean mis-matched PANs, unreported employer, or data-entry error.
+    # When AIS reports more salary than Form 16, the surplus is an unaccounted
+    # employer's income. Add it as a synthetic salary component so it is taxed.
     ais_salary = _num(ais.get("salary_reported"))
     if f16_gross_total > 0 and ais_salary > 0:
         _pick(discrepancies, "salary_gross", "Gross Salary (Form 16 vs AIS)", [
             (DocType.FORM16, f16_gross_total),
             (DocType.AIS, ais_salary)])
+        surplus = ais_salary - f16_gross_total
+        if surplus > 1000:
+            # Represent the unaccounted salary as a minimal component so the
+            # computation engine includes it. No exemptions/deductions are assumed.
+            ti.salaries.append(SalaryComponent(
+                employer_name="[AIS: Unaccounted Salary]",
+                gross_salary=surplus,
+                taxable_salary=surplus,
+            ))
 
     # Cross-source salary TDS check: Form 16 TDS sum vs 26AS salary TDS.
     # These should match to the rupee; a mismatch means an employer failed to
@@ -264,10 +279,6 @@ def consolidate_detailed(
 
     # VDA from AIS (194S TDS signals crypto income even without broker P&L).
     ais_vda_tds = _num(ais.get("vda_tds"))
-    if ais_vda_tds > 0 and ti.capital_gains.vda_gain == 0:
-        # We can't compute the gain, but record TDS as a signal — the review
-        # screen will show vda_tds on the discrepancy/info surface.
-        pass  # vda_tds flows into tcs_total below
 
     # Capital gains: sum across brokers.
     cg = CapitalGains()
@@ -278,6 +289,36 @@ def consolidate_detailed(
         cg.ltcg_other += _num(v.get("ltcg_other"))
         cg.vda_gain += _num(v.get("vda_gain"))
     ti.capital_gains = cg
+
+    # When AIS shows securities sold but no broker P&L provided, flag it so the
+    # user knows capital gains need to be declared. We cannot compute the actual
+    # gain (cost basis and holding period are needed), but we surface a discrepancy
+    # so the review screen prompts for a broker Tax P&L upload.
+    ais_sale = _num(ais.get("sale_of_securities"))
+    has_broker = bool(by_type.get(DocType.BROKER_PNL))
+    if ais_sale > 0 and not has_broker:
+        discrepancies.append(Discrepancy(
+            field="capital_gains",
+            label="Capital Gains (securities sold — broker P&L missing)",
+            sources=[{"doc": "Annual Information Statement (AIS)",
+                      "value": ais_sale}],
+            chosen=0.0,
+            note=(
+                f"AIS shows ₹{ais_sale:,.0f} in securities/MF sales. Upload your "
+                "broker Tax P&L to compute STCG/LTCG accurately. Without it, "
+                "capital gains are set to zero and your tax may be under-stated."
+            )))
+    if ais_vda_tds > 0 and cg.vda_gain == 0:
+        discrepancies.append(Discrepancy(
+            field="vda_gain",
+            label="Crypto / VDA Income (TDS detected — gain amount unknown)",
+            sources=[{"doc": "Annual Information Statement (AIS)",
+                      "value": ais_vda_tds}],
+            chosen=0.0,
+            note=(
+                f"AIS shows ₹{ais_vda_tds:,.0f} TDS on virtual digital assets (Sec 194S). "
+                "Please enter your crypto gain amount manually for accurate tax computation."
+            )))
 
     # Taxes paid: prefer Form 26AS aggregates, else sum of per-document TDS.
     tds_individual = (

@@ -148,7 +148,14 @@ DOC_REGISTRY: dict[DocType, DocSpec] = {
             FieldSpec(name="deduction_80d", label="Deduction u/s 80D (Health Insurance)",
                       description="Medical insurance premium deduction as per Part B Chapter VI-A table. Enter 0 if not present."),
             FieldSpec(name="tds", label="Total TDS Deducted",
-                      description="Total tax deducted at source on salary.", required=True),
+                      description=(
+                          "Total TDS deducted and deposited on salary. "
+                          "Look for the FINAL TDS line — labeled 'Total TDS Deducted', "
+                          "'Tax Deducted at Source', or 'Less: Tax deducted at source'. "
+                          "This equals Income Tax + Surcharge + Education Cess combined. "
+                          "Do NOT use the 'Income Tax' or 'Tax on total income' line alone "
+                          "(that is tax before cess). The correct value matches Form 26AS."
+                      ), required=True),
             FieldSpec(name="regime", label="Tax Regime Used by Employer", type=FieldType.TEXT,
                       description="Whether employer computed under 'old' or 'new' regime."),
         ],

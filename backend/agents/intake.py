@@ -71,6 +71,7 @@ def build_profile(answers: dict) -> UserProfile:
 
 # Maps an extractable profile flag to a predicate over the consolidated input.
 _UNSURE_RESOLVERS: dict[str, "Callable[[TaxInput], bool]"] = {
+    "has_professional_income": lambda ti: ti.professional_fees > 0,
     "has_capital_gains": lambda ti: any((
         ti.capital_gains.stcg_111a, ti.capital_gains.ltcg_112a,
         ti.capital_gains.stcg_other, ti.capital_gains.ltcg_other,
@@ -188,6 +189,8 @@ def select_form(profile: UserProfile) -> FormDecision:
         reasons.append("Holds unlisted shares.")
     if profile.has_rsu_esop:
         reasons.append("RSU/ESOP perquisite/deferral reporting.")
+    if profile.has_professional_income:
+        reasons.append("Has professional/freelance income (Sec 194J) — requires ITR-2/ITR-3.")
     if profile.is_company_director:
         reasons.append("Is a company director.")
     if profile.has_foreign_assets_income:

@@ -179,6 +179,10 @@ async def analyze_gaps(session_id: str) -> dict:
         summary.append("Dividend income detected")
     if inferred.get("has_capital_gains"):
         summary.append("Capital-gains activity detected")
+    if ti.professional_fees > 0:
+        summary.append(
+            f"⚠ Professional/freelance income ₹{ti.professional_fees:,.0f} detected "
+            f"(Sec 194J from AIS) — ITR-2 required, not ITR-1")
 
     suggested: list[dict] = []
     has_cg = any(getattr(ti.capital_gains, f) for f in _CG_SIGNAL_FIELDS)
