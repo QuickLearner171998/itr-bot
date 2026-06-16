@@ -14,7 +14,7 @@ export const api = {
     fetch(`${API_BASE}/api/session`, { method: "POST" }).then(jsonOrThrow),
 
   getState: (sid: string) =>
-    fetch(`${API_BASE}/api/session/${sid}/state`).then(jsonOrThrow),
+    fetch(`${API_BASE}/api/session/${sid}/state`, { cache: "no-store" }).then(jsonOrThrow),
 
   getBaseChecklist: () =>
     fetch(`${API_BASE}/api/base-checklist`).then(jsonOrThrow),
@@ -77,7 +77,7 @@ export const api = {
     ),
 
   guidance: (sid: string) =>
-    fetch(`${API_BASE}/api/session/${sid}/guidance`).then(jsonOrThrow),
+    fetch(`${API_BASE}/api/session/${sid}/guidance`, { cache: "no-store" }).then(jsonOrThrow),
 
   chat: (message: string, history: { role: string; content: string }[]) =>
     fetch(`${API_BASE}/api/chat`, {

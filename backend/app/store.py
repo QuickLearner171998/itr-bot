@@ -9,6 +9,7 @@ work intact.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import sqlite3
@@ -22,6 +23,41 @@ from .config import settings
 from .logging_setup import get_logger
 
 logger = get_logger(__name__)
+
+# Source files whose contents change the extracted output (logic + prompts +
+# field schema + model params). Their hash is folded into the cache key so any
+# edit here auto-invalidates every cached extraction.
+_EXTRACTION_SOURCE_FILES = (
+    "agents/doc_intel/extract.py",
+    "schemas/documents.py",
+    "agents/llm.py",
+)
+
+
+@functools.lru_cache(maxsize=1)
+def _extraction_fingerprint() -> str:
+    """Stable fingerprint of everything that affects extraction output.
+
+    Combines the manual version override, the extraction model + sampling
+    params, and a content hash of the extraction source files. Computed once per
+    process. Bumping any of these invalidates the content cache so stale,
+    pre-fix extractions are never served after a deploy.
+
+    Returns:
+        A 16-char hex fingerprint.
+    """
+    h = hashlib.sha256()
+    h.update(settings.extraction_version.encode())
+    h.update(settings.extraction_model.encode())
+    h.update(settings.extraction_reasoning_effort.encode())
+    h.update(str(settings.llm_seed).encode())
+    pkg_root = Path(__file__).resolve().parents[1]  # the backend/ package root
+    for rel in _EXTRACTION_SOURCE_FILES:
+        try:
+            h.update((pkg_root / rel).read_bytes())
+        except OSError:
+            h.update(b"missing")
+    return h.hexdigest()[:16]
 
 
 class SessionStore:
@@ -117,10 +153,11 @@ class SessionStore:
 
     @staticmethod
     def _content_hash(data: bytes) -> str:
-        # Salt the key with the extraction version so any extraction-logic /
-        # prompt / schema change auto-invalidates old entries (no stale results).
+        # Salt the key with an auto-computed extraction fingerprint so any
+        # change to extraction logic / prompts / schema / model auto-invalidates
+        # old entries — a deployed fix can never return a stale pre-fix result.
         return hashlib.sha256(
-            data + settings.extraction_version.encode()).hexdigest()
+            data + _extraction_fingerprint().encode()).hexdigest()
 
     def cache_get(self, data: bytes) -> dict[str, Any] | None:
         """Return a cached extraction for ``data`` if one exists and is fresh.

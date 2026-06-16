@@ -15,4 +15,5 @@ services:
       - key: LOG_PRETTY
         value: "false"
       - key: EXTRACTION_CACHE_TTL
-        value: "0"           # disabled: never serve stale extractions (fixes always take effect)
+        value: "604800"      # 7 days. Cache key is auto-fingerprinted on extraction
+                             # source/model changes, so fixes are never served stale.
