@@ -342,20 +342,20 @@ async def extract_document(
     full_text = table_text + "\n" + text if table_text else text
     fields = _verify_source_hints(fields, full_text)
 
-    # Targeted single-field retry: instead of re-running the full extraction,
-    # ask the model to fix only the specific fields that are still uncertain.
-    # This focuses the model's attention and avoids re-introducing errors in
-    # already-correct fields.
+    # Targeted retry: re-extract ONLY fields that violate a known statutory
+    # range (a deterministic trigger pointing at a genuine error). Merely
+    # low-confidence-but-plausible values are intentionally NOT retried — they
+    # are surfaced to the user for review instead. Re-rolling plausible values
+    # was a source of run-to-run tax variance without reliably improving
+    # accuracy, so it is no longer done.
     for attempt in range(settings.max_extraction_retries):
-        flagged = [f for f in fields if f.flagged and f.value not in (None, "")]
-        # Also include fields that failed business-rule sanity checks.
         suspicious = [f for f in fields if _is_suspicious(doc_type, f)]
-        targets = {f.name: f for f in flagged + suspicious}
+        targets = {f.name: f for f in suspicious}
         if not targets:
             break
         target_list = "\n".join(
             f"  - {f.name} (current value: {f.value}, confidence: {f.confidence:.2f}, "
-            f"issue: {'unverified source' if '[unverified' in (f.source_hint or '') else 'low confidence'})"
+            f"issue: value is outside the expected statutory range)"
             for f in targets.values())
         await bus.emit(session_id, EventType.AGENT_STEP,
                        f"Targeted re-extraction pass {attempt + 1}: fixing {len(targets)} field(s) in {spec.title}...",

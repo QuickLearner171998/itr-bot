@@ -242,18 +242,38 @@ def consolidate_detailed(
     # employer's income. Add it as a synthetic salary component so it is taxed.
     ais_salary = _num(ais.get("salary_reported"))
     if f16_gross_total > 0 and ais_salary > 0:
-        _pick(discrepancies, "salary_gross", "Gross Salary (Form 16 vs AIS)", [
-            (DocType.FORM16, f16_gross_total),
-            (DocType.AIS, ais_salary)])
         surplus = ais_salary - f16_gross_total
         if surplus > 1000:
-            # Represent the unaccounted salary as a minimal component so the
-            # computation engine includes it. No exemptions/deductions are assumed.
+            # AIS reports more salary than the uploaded Form 16(s). Auto-add the
+            # gap as income so nothing is under-reported, and attach a clear
+            # explanation of why the gap exists and what to re-check.
             ti.salaries.append(SalaryComponent(
-                employer_name="[AIS: Unaccounted Salary]",
+                employer_name="[AIS: Additional salary not in Form 16]",
                 gross_salary=surplus,
                 taxable_salary=surplus,
             ))
+            discrepancies.append(Discrepancy(
+                field="salary_gross",
+                label="Salary: AIS higher than Form 16",
+                sources=[
+                    {"doc": "Form 16 (total)", "value": f16_gross_total},
+                    {"doc": "AIS (salary reported)", "value": ais_salary},
+                ],
+                chosen=ais_salary,
+                note=(
+                    f"AIS reports ₹{ais_salary:,.0f} of salary but your Form 16(s) total "
+                    f"₹{f16_gross_total:,.0f} — a gap of ₹{surplus:,.0f}. This usually means a "
+                    "previous employer's salary, arrears, or perquisites are missing from the "
+                    "uploaded Form 16. The gap has been added as income so your tax is not "
+                    "under-reported. To verify: (1) upload any missing employer's Form 16; "
+                    "(2) in AIS, check every entry under 'Salary (Section 192)'; "
+                    "(3) confirm the PAN and period match. Edit this figure on the review "
+                    "screen if the AIS amount is wrong.")))
+        elif surplus < -1000:
+            # Form 16 reports more than AIS — flag for confirmation too.
+            _pick(discrepancies, "salary_gross", "Gross Salary (Form 16 vs AIS)", [
+                (DocType.FORM16, f16_gross_total),
+                (DocType.AIS, ais_salary)])
 
     # Cross-source salary TDS check: Form 16 TDS sum vs 26AS salary TDS.
     # These should match to the rupee; a mismatch means an employer failed to

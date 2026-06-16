@@ -117,7 +117,10 @@ class SessionStore:
 
     @staticmethod
     def _content_hash(data: bytes) -> str:
-        return hashlib.sha256(data).hexdigest()
+        # Salt the key with the extraction version so any extraction-logic /
+        # prompt / schema change auto-invalidates old entries (no stale results).
+        return hashlib.sha256(
+            data + settings.extraction_version.encode()).hexdigest()
 
     def cache_get(self, data: bytes) -> dict[str, Any] | None:
         """Return a cached extraction for ``data`` if one exists and is fresh.

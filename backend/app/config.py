@@ -57,6 +57,13 @@ class Settings(BaseSettings):
     # Extraction cache TTL in seconds (default 7 days). Set to 0 to disable.
     extraction_cache_ttl: int = 7 * 24 * 3600
 
+    # Cache-key salt. The content-hash cache key includes this string, so any
+    # change to extraction logic / prompts / schemas should bump this value to
+    # auto-invalidate every stale entry. This makes the cache safe to re-enable
+    # without ever serving a pre-fix extraction (the staleness issue that led to
+    # the cache being disabled). Bump on any extraction-affecting change.
+    extraction_version: str = "2026-06-16"
+
     # Assessment year context.
     assessment_year: str = "2026-27"
     financial_year: str = "2025-26"
