@@ -26,7 +26,14 @@ import pathlib
 import sys
 import time
 
-sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
+_REPO_ROOT = pathlib.Path(__file__).parent.parent
+sys.path.insert(0, str(_REPO_ROOT))
+
+
+def _load_dotenv() -> None:
+    """Load the repo ``.env`` into the process environment (DOC_PASSWORDS etc.)."""
+    from dotenv import load_dotenv
+    load_dotenv(_REPO_ROOT / ".env")
 
 # Only extraction helpers are imported from the app — not engine or consolidate.
 from backend.agents.doc_intel.extract import extract_document
@@ -874,6 +881,7 @@ async def main() -> None:
     p.add_argument("--age", type=int, default=27)
     args = p.parse_args()
 
+    _load_dotenv()
     docs_dir = pathlib.Path(args.docs_dir).expanduser()
     out_path = pathlib.Path(args.out)
     passwords: dict[str, str] = json.loads(os.environ.get("DOC_PASSWORDS", "{}"))
