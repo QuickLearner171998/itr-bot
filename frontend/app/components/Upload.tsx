@@ -251,66 +251,8 @@ function PreviewModal({
 }) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
-
-  return (
-    <div
-      className="preview-modal-overlay"
-      onClick={onClose}
-    >
-      <div
-        className="preview-modal-content"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <button className="preview-modal-close" onClick={onClose} aria-label="Close preview">
-          ✕
-        </button>
-        <div className="preview-modal-title">{upload.fileName}</div>
-        <div className="preview-modal-body">
-          {upload.kind === "image" ? (
-            <img src={upload.previewUrl} alt={upload.fileName} style={{ maxWidth: "100%", maxHeight: "80vh", objectFit: "contain" }} />
-          ) : upload.kind === "pdf" && !upload.locked ? (
-            <embed
-              src={`${upload.previewUrl}#toolbar=1&navpanes=0`}
-              type="application/pdf"
-              style={{ width: "100%", height: "80vh" }}
-            />
-          ) : upload.kind === "excel" ? (
-            <div className="ut-preview-none">
-              <span style={{ fontSize: 48 }}>📊</span>
-              <span style={{ fontSize: 13, color: "var(--text-faint)", marginTop: 8 }}>
-                {upload.fileName.toLowerCase().endsWith(".csv") ? "CSV" : "Excel"} file — no browser preview available
-              </span>
-            </div>
-          ) : upload.locked ? (
-            <div className="ut-preview-none">
-              <span style={{ fontSize: 48 }}>🔒</span>
-              <span style={{ fontSize: 13, color: "var(--text-faint)", marginTop: 8 }}>Encrypted PDF — preview not available</span>
-            </div>
-          ) : (
-            <div className="ut-preview-none">
-              <span style={{ fontSize: 13, color: "var(--text-faint)" }}>No preview available</span>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function FilePreviewModal({
-  upload,
-  onClose,
-}: {
-  upload: LocalUpload;
-  onClose: () => void;
-}) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
   }, [onClose]);
 
   return (
@@ -318,7 +260,7 @@ function FilePreviewModal({
       <div className="preview-modal" onClick={(e) => e.stopPropagation()}>
         <div className="preview-modal-header">
           <span className="preview-modal-title">{upload.fileName}</span>
-          <button className="preview-modal-close" onClick={onClose}>✕</button>
+          <button className="preview-modal-close" onClick={onClose} aria-label="Close preview">✕</button>
         </div>
         <div className="preview-modal-body">
           {upload.kind === "image" ? (
@@ -369,7 +311,6 @@ function UploadTile({
   const [open, setOpen] = useState(true);
   const [edits, setEdits] = useState<Record<string, any>>({});
   const [saved, setSaved] = useState(false);
-  const [previewOpen, setPreviewOpen] = useState(false);
   const [previewing, setPreviewing] = useState(false);
 
   // Collapse automatically once a document is fully validated; expand if it
@@ -394,64 +335,70 @@ function UploadTile({
 
   return (
     <>
-    {previewing && <PreviewModal upload={upload} onClose={() => setPreviewing(false)} />}
-    <div className={`upload-tile ${status}`}>
-      <button className="ut-head" onClick={() => setOpen((o) => !o)}>
-        <span className="ut-name">
-          <span className="dsh-caret">{open ? "▾" : "▸"}</span>
-          <span
-            className="ut-filename-link"
-            onClick={(e) => { e.stopPropagation(); setPreviewing(true); }}
-            title="Click to preview"
-          >
-            {upload.fileName}
+      {previewing && <PreviewModal upload={upload} onClose={() => setPreviewing(false)} />}
+      <div className={`upload-tile ${status}`}>
+        <button className="ut-head" onClick={() => setOpen((o) => !o)}>
+          <span className="ut-name">
+            <span className="dsh-caret">{open ? "▾" : "▸"}</span>
+            <span
+              className="ut-filename-link"
+              onClick={(e) => { e.stopPropagation(); setPreviewing(true); }}
+              title="Click to preview file"
+            >
+              {upload.fileName}
+            </span>
           </span>
-        </span>
-        <span className="ut-status">
-          {extraction && (
-            <span className={`conf-chip ${confClass(confidence)}`}>{confLabel(confidence)}</span>
-          )}
-          <span className={`badge ${status}`}>
-            {STATUS_LABEL[status] || status}
-            {status === "extracting" && <span className="spinner mini" />}
-          </span>
-        </span>
-      </button>
-
-      {open && (
-        <div className="ut-body">
-          {previewOpen && <FilePreviewModal upload={upload} onClose={() => setPreviewOpen(false)} />}
-          <div
-            className="ut-preview ut-preview-clickable"
-            onClick={() => setPreviewOpen(true)}
-            title="Click to enlarge preview"
-          >
-            {upload.kind === "image" ? (
-              <img src={upload.previewUrl} alt={upload.fileName} />
-            ) : upload.kind === "pdf" && !upload.locked ? (
-              <embed src={`${upload.previewUrl}#toolbar=0&navpanes=0`} type="application/pdf" />
-            ) : upload.kind === "excel" ? (
-              <div className="ut-preview-none">
-                <span style={{ fontSize: 28 }}>📊</span>
-                <span style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6 }}>
-                  {upload.fileName.toLowerCase().endsWith(".csv") ? "CSV" : "Excel"} file
-                </span>
-              </div>
-            ) : (
-              <div className="ut-preview-none">
-                {upload.locked ? (
-                  <>
-                    <span style={{ fontSize: 28 }}>🔒</span>
-                    <span style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6 }}>
-                      Encrypted PDF
-                    </span>
-                  </>
-                ) : (
-                  docIcon(upload.docType)
-                )}
-              </div>
+          <span className="ut-status">
+            {extraction && (
+              <span className={`conf-chip ${confClass(confidence)}`}>{confLabel(confidence)}</span>
             )}
-          </div>
+            <span className={`badge ${status}`}>
+              {STATUS_LABEL[status] || status}
+              {status === "extracting" && <span className="spinner mini" />}
+            </span>
+          </span>
+        </button>
+
+        {open && (
+          <div className="ut-body">
+            {/* Thumbnail — pointer-events overlay captures click even over embed */}
+            <div className="ut-preview ut-preview-clickable" title="Click to preview file">
+              {upload.kind === "image" ? (
+                <img
+                  src={upload.previewUrl}
+                  alt={upload.fileName}
+                  onClick={() => setPreviewing(true)}
+                />
+              ) : upload.kind === "pdf" && !upload.locked ? (
+                <div style={{ position: "relative", width: "100%", height: "100%" }}>
+                  <embed src={`${upload.previewUrl}#toolbar=0&navpanes=0`} type="application/pdf" style={{ width: "100%", height: "100%", pointerEvents: "none" }} />
+                  <div
+                    style={{ position: "absolute", inset: 0, cursor: "zoom-in" }}
+                    onClick={() => setPreviewing(true)}
+                  />
+                </div>
+              ) : upload.kind === "excel" ? (
+                <div className="ut-preview-none" onClick={() => setPreviewing(true)}>
+                  <span style={{ fontSize: 28 }}>📊</span>
+                  <span style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6 }}>
+                    {upload.fileName.toLowerCase().endsWith(".csv") ? "CSV" : "Excel"} file
+                  </span>
+                </div>
+              ) : (
+                <div className="ut-preview-none" onClick={() => setPreviewing(true)}>
+                  {upload.locked ? (
+                    <>
+                      <span style={{ fontSize: 28 }}>🔒</span>
+                      <span style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6 }}>
+                        Encrypted PDF
+                      </span>
+                    </>
+                  ) : (
+                    docIcon(upload.docType)
+                  )}
+                </div>
+              )}
+            </div>
 
           <div className="ut-fields">
             {upload.failed ? (
