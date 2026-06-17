@@ -25,7 +25,7 @@ interface LocalUpload {
   docType: string;
   fileName: string;
   previewUrl: string;
-  kind: "image" | "pdf" | "other";
+  kind: "image" | "pdf" | "excel" | "other";
   locked?: boolean; // password-protected PDF — browser can't preview
   failed?: boolean;
 }
@@ -55,10 +55,13 @@ export function Upload({ checklist, sessionId, onNext, onBack }: Props) {
   const addUpload = async (docType: string, file: File, password?: string) => {
     const uploadId = makeId();
     const previewUrl = URL.createObjectURL(file);
+    const nameLower = file.name.toLowerCase();
     const kind = file.type.startsWith("image/")
       ? "image"
-      : file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")
+      : file.type === "application/pdf" || nameLower.endsWith(".pdf")
       ? "pdf"
+      : nameLower.endsWith(".xlsx") || nameLower.endsWith(".xls") || nameLower.endsWith(".csv")
+      ? "excel"
       : "other";
     const isMulti = MULTI_UPLOAD_TYPES.has(docType);
     setUploads((u) => {
@@ -186,6 +189,11 @@ function DocTypeSection({
           <span className={`tag ${item.required ? "req" : "opt"}`}>
             {item.required ? "Required" : "Optional"}
           </span>
+          {item.covered_by && (
+            <span className="tag covered" title={`Data already extracted from: ${item.covered_by}`}>
+              Covered by {item.covered_by}
+            </span>
+          )}
         </span>
         <span className="dsh-status">
           {uploads.length > 0 && (
@@ -302,6 +310,13 @@ function UploadTile({
               <img src={upload.previewUrl} alt={upload.fileName} />
             ) : upload.kind === "pdf" && !upload.locked ? (
               <embed src={`${upload.previewUrl}#toolbar=0&navpanes=0`} type="application/pdf" />
+            ) : upload.kind === "excel" ? (
+              <div className="ut-preview-none">
+                <span style={{ fontSize: 28 }}>📊</span>
+                <span style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6 }}>
+                  {upload.fileName.toLowerCase().endsWith(".csv") ? "CSV" : "Excel"} file
+                </span>
+              </div>
             ) : (
               <div className="ut-preview-none">
                 {upload.locked ? (
@@ -330,7 +345,8 @@ function UploadTile({
               </div>
             ) : (
               <>
-                {fields.map((f) => (
+                {/* Editable / computation fields */}
+                {fields.filter(f => !f.display_only).map((f) => (
                   <div className="field-row" key={f.name}>
                     <span className="fl">
                       {f.label}
@@ -355,6 +371,33 @@ function UploadTile({
                     </span>
                   </div>
                 ))}
+
+                {/* Display-only breakdown (informational, employer-certified) */}
+                {fields.some(f => f.display_only && f.value != null && f.value !== 0) && (
+                  <details className="breakdown-details" style={{ marginTop: 10 }}>
+                    <summary style={{ cursor: "pointer", fontSize: 11, color: "var(--text-faint)", userSelect: "none" }}>
+                      Allowance breakdown (employer-certified, informational only)
+                    </summary>
+                    <div style={{ marginTop: 6, paddingLeft: 8, borderLeft: "2px solid var(--border)" }}>
+                      <div style={{ fontSize: 10, color: "var(--text-faint)", marginBottom: 6 }}>
+                        These amounts are already included in the Exempt Allowances total above and are used for verification only — they do not affect your tax.
+                      </div>
+                      {fields.filter(f => f.display_only && f.value != null && f.value !== 0).map((f) => (
+                        <div className="field-row" key={f.name} style={{ opacity: 0.8 }}>
+                          <span className="fl" style={{ fontSize: 12, color: "var(--text-faint)" }}>
+                            {f.label.replace(/^\s+/, "")}
+                            {f.source_hint && (
+                              <span className="field-source-hint">{f.source_hint}</span>
+                            )}
+                          </span>
+                          <span className="fv" style={{ fontSize: 12, color: "var(--text-faint)" }}>
+                            <span>{typeof f.value === "number" ? inr(f.value) : f.value ?? "-"}</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
 
                 {extraction && extraction.issues.length > 0 && (
                   <div style={{ marginTop: 10 }}>
@@ -473,7 +516,7 @@ function Dropzone({
         <input
           ref={inputRef}
           type="file"
-          accept=".pdf,image/*"
+          accept=".pdf,.xlsx,.xls,.csv,image/*"
           multiple={multi}
           style={{ display: "none" }}
           onChange={(e) => {

@@ -105,6 +105,65 @@ def _extract_tables_as_text(data: bytes, password: str | None) -> str:
     return "\n\n".join(sections)
 
 
+_EXCEL_MIMES = {
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # .xlsx
+    "application/vnd.ms-excel",                                            # .xls (legacy)
+    "text/csv",
+    "text/plain",  # some browsers send .csv as text/plain
+}
+
+
+def _read_excel_as_text(data: bytes, mime: str, filename: str) -> str:
+    """Convert an Excel (.xlsx/.xls) or CSV file to row-column text for the LLM.
+
+    Each sheet is rendered as a labelled table so the extractor sees the same
+    structured-table format it uses for pdfplumber output. CSV is read directly;
+    .xlsx/.xls are parsed with openpyxl.
+
+    Args:
+        data: Raw file bytes.
+        mime: MIME type of the file.
+        filename: Original filename (used to detect .csv extension when MIME
+            is ambiguous).
+
+    Returns:
+        Human-readable table text, one section per sheet/file.
+    """
+    import csv
+    import io
+
+    sections: list[str] = []
+    fname_lower = filename.lower()
+    is_csv = mime in ("text/csv", "text/plain") or fname_lower.endswith(".csv")
+
+    if is_csv:
+        text = data.decode("utf-8", errors="replace")
+        reader = csv.reader(io.StringIO(text))
+        rows = list(reader)
+        if rows:
+            lines = ["[Sheet 1]"]
+            for row in rows:
+                cells = [c.strip() for c in row]
+                if any(cells):
+                    lines.append("  " + " | ".join(cells))
+            sections.append("\n".join(lines))
+    else:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            lines = [f"[Sheet: {sheet_name}]"]
+            for row in ws.iter_rows(values_only=True):
+                cells = [str(c) if c is not None else "" for c in row]
+                if any(c.strip() for c in cells):
+                    lines.append("  " + " | ".join(cells))
+            if len(lines) > 1:
+                sections.append("\n".join(lines))
+        wb.close()
+
+    return "\n\n".join(sections)
+
+
 def _render_pdf_images(data: bytes, password: str | None, max_pages: int = 3) -> list[bytes]:
     """Render leading PDF pages to PNG bytes (only if poppler is available)."""
     if shutil.which("pdftoppm") is None:
@@ -183,7 +242,10 @@ def _to_fields(doc_type: DocType, parsed: dict) -> list[ExtractedField]:
         fields.append(ExtractedField(
             name=spec_field.name, label=spec_field.label, value=value,
             confidence=confidence, source_hint=cell.get("source_hint"),
-            flagged=confidence < 0.6 and value not in (None, "")))
+            flagged=(not spec_field.display_only
+                     and confidence < 0.6
+                     and value not in (None, "")),
+            display_only=spec_field.display_only))
     return fields
 
 
@@ -310,6 +372,8 @@ async def extract_document(
         )
         if len(text.strip()) < 80:  # likely scanned -> need vision
             images = await asyncio.to_thread(_render_pdf_images, data, password)
+    elif mime in _EXCEL_MIMES or filename.lower().endswith((".xlsx", ".xls", ".csv")):
+        table_text = await asyncio.to_thread(_read_excel_as_text, data, mime, filename)
     else:
         images = [data]
 
@@ -349,7 +413,10 @@ async def extract_document(
     # was a source of run-to-run tax variance without reliably improving
     # accuracy, so it is no longer done.
     for attempt in range(settings.max_extraction_retries):
-        suspicious = [f for f in fields if _is_suspicious(doc_type, f)]
+        # Never retry display-only fields — they're informational and their
+        # values don't affect tax computation.
+        suspicious = [f for f in fields
+                      if not f.display_only and _is_suspicious(doc_type, f)]
         targets = {f.name: f for f in suspicious}
         if not targets:
             break

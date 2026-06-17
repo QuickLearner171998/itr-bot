@@ -95,3 +95,4 @@ class ChecklistItem(BaseModel):
     why: str
     how_to_get: list[str]
     source: str
+    covered_by: str | None = None  # e.g. "AIS" when data already extracted

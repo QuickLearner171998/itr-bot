@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
+import shutil
 import time
 
 from fastapi import FastAPI, Request
@@ -63,7 +65,32 @@ def health() -> dict:
     }
 
 
+_UPLOAD_MAX_AGE_SECS: int = 24 * 3600  # 24 hours
+_CLEANUP_INTERVAL_SECS: int = 3600     # run every hour
+
+
+async def _cleanup_uploads_loop() -> None:
+    """Periodically delete session upload directories older than 24 hours."""
+    while True:
+        await asyncio.sleep(_CLEANUP_INTERVAL_SECS)
+        cutoff = time.time() - _UPLOAD_MAX_AGE_SECS
+        uploads_root = settings.uploads_dir
+        if not uploads_root.exists():
+            continue
+        removed = 0
+        for entry in uploads_root.iterdir():
+            if not entry.is_dir():
+                continue
+            mtime = entry.stat().st_mtime
+            if mtime < cutoff:
+                shutil.rmtree(entry, ignore_errors=True)
+                removed += 1
+        if removed:
+            logger.info("upload cleanup done", extra={"removed_dirs": removed})
+
+
 @app.on_event("startup")
 def _startup() -> None:
     logger.info("backend started", extra={
         "ay": settings.assessment_year, "models_extraction": settings.extraction_model})
+    asyncio.create_task(_cleanup_uploads_loop())

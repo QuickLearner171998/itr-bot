@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from ..schemas.compute import TaxInput
 from ..schemas.documents import DocType
 from ..schemas.profile import (
     ChecklistItem,
@@ -290,6 +291,54 @@ _BASE_OPTIONAL = [
     DocType.INTEREST_CERT, DocType.BROKER_PNL, DocType.HOME_LOAN_CERT,
     DocType.DEDUCTION_PROOF, DocType.FORM16A, DocType.RENT_RECEIPT, DocType.DONATION_80G,
 ]
+
+
+def mark_covered_items(checklist: list[ChecklistItem], ti: TaxInput) -> list[ChecklistItem]:
+    """Return a copy of the checklist with optional docs flagged as covered.
+
+    When enough data is already present in the core docs (Form 16 / AIS / 26AS),
+    the optional upload is marked ``covered_by`` so the UI can hide or dim it.
+    The user can still upload the doc to override — coverage is purely advisory.
+
+    Coverage rules (all conservative — only mark covered when the value is
+    unambiguously present and non-zero):
+
+    - INTEREST_CERT  → covered by AIS when savings or FD interest > 0
+    - FORM16A        → covered by AIS/26AS when TDS matches extracted total
+    - RENT_RECEIPT   → covered by Form 16 when exempt_allowances > 0
+                       (HRA already certified by employer)
+    - DEDUCTION_PROOF→ covered by Form 16 when 80C or 80D is already captured
+    - BROKER_PNL     → NOT auto-covered (AIS gives totals but not scrip-wise
+                       cost basis needed for STCG/LTCG classification)
+
+    Args:
+        checklist: Base checklist produced by ``build_base_checklist``.
+        ti: Consolidated ``TaxInput`` from already-uploaded documents.
+
+    Returns:
+        New list with ``covered_by`` set on items whose data is already present.
+    """
+    from copy import deepcopy
+
+    result = deepcopy(checklist)
+    exempt_total = sum(s.exempt_allowances for s in ti.salaries)
+    f16_80c = ti.deductions.amount_80c
+    f16_80d = ti.deductions.amount_80d_self + ti.deductions.amount_80d_parents
+
+    coverage: dict[str, str | None] = {
+        DocType.INTEREST_CERT.value: (
+            "AIS" if (ti.savings_interest > 0 or ti.fd_interest > 0) else None),
+        DocType.FORM16A.value: (
+            "AIS / 26AS" if ti.tds_total > 0 else None),
+        DocType.RENT_RECEIPT.value: (
+            "Form 16 (employer-certified Sec 10 exemption)" if exempt_total > 0 else None),
+        DocType.DEDUCTION_PROOF.value: (
+            "Form 16" if (f16_80c > 0 or f16_80d > 0) else None),
+    }
+    for item in result:
+        if not item.required and item.doc_type in coverage:
+            item.covered_by = coverage[item.doc_type]
+    return result
 
 
 def build_base_checklist() -> list[ChecklistItem]:

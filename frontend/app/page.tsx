@@ -162,7 +162,14 @@ export default function Home() {
           />
         );
       case 3:
-        return <Reconcile sessionId={sessionId} onBack={() => navigate(2)} onNext={() => navigate(4)} />;
+        return (
+          <Reconcile
+            sessionId={sessionId}
+            onBack={() => navigate(2)}
+            onNext={() => navigate(4)}
+            onCoverageUpdate={(covered) => setChecklist(covered)}
+          />
+        );
       case 4:
         return <Results sessionId={sessionId} onBack={() => navigate(3)} onNext={() => navigate(5)} />;
       case 5:

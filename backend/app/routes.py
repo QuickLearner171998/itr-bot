@@ -23,6 +23,7 @@ from ..agents.intake import (
     build_base_checklist,
     build_profile_from_docs_and_gaps,
     infer_profile_fields,
+    mark_covered_items,
     select_form,
 )
 from ..agents.orchestrator import run_computation
@@ -353,9 +354,11 @@ def _consolidate_from_docs(session_id: str, state: dict) -> dict:
     docs = _flatten_docs(state)
     age = int(state.get("profile", {}).get("age", 30))
     ti, discrepancies = consolidate_detailed(docs, age=age)
+    covered_checklist = mark_covered_items(build_base_checklist(), ti)
     payload = {
         "tax_input": ti.model_dump(),
         "discrepancies": [d.model_dump() for d in discrepancies],
+        "checklist_coverage": [c.model_dump() for c in covered_checklist],
     }
     store.update(session_id, payload)
     return payload

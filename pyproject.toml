@@ -16,6 +16,7 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "sse-starlette>=2.1.0",
     "pdfplumber>=0.11.10",
+    "openpyxl>=3.1.5",
 ]
 
 [dependency-groups]

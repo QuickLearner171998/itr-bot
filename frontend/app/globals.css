@@ -202,6 +202,7 @@ input.field:focus, select.field:focus { border-color: var(--accent); }
 .tag { font-size: 10px; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
 .tag.req { background: rgba(109,139,255,0.16); color: var(--accent); }
 .tag.opt { background: rgba(255,255,255,0.08); color: var(--text-faint); }
+.tag.covered { background: rgba(52,199,89,0.14); color: #3dc96c; }
 
 .upload-tile { border: 1px solid var(--panel-border); border-radius: var(--radius-sm); margin-bottom: 12px; overflow: hidden; animation: fadeIn 0.3s ease; }
 .upload-tile.needs_review { border-color: rgba(255,194,75,0.4); }

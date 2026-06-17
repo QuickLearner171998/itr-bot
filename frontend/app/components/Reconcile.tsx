@@ -4,12 +4,13 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import { confClass, confLabel, docIcon, inr } from "../lib/format";
 import { useSession } from "../lib/session";
-import type { Discrepancy, TaxInput } from "../lib/types";
+import type { ChecklistItem, Discrepancy, TaxInput } from "../lib/types";
 
 interface Props {
   sessionId: string;
   onNext: () => void;
   onBack: () => void;
+  onCoverageUpdate?: (checklist: ChecklistItem[]) => void;
 }
 
 interface FieldDef {
@@ -20,6 +21,8 @@ interface FieldDef {
 interface Group {
   title: string;
   fields: FieldDef[];
+  note?: (ti: TaxInput) => string | null; // optional dynamic note
+  hideFields?: (ti: TaxInput) => string[]; // field paths to hide
 }
 
 // Editable consolidated fields, grouped. Document extraction prefills these;
@@ -44,6 +47,21 @@ const GROUPS: Group[] = [
       { path: "hra_rent_paid", label: "Rent paid" },
       { path: "hra_basic_da", label: "Basic + DA" },
     ],
+    note: (ti) => {
+      const exempt = ti.salaries.reduce((s, sal) => s + (sal.exempt_allowances ?? 0), 0);
+      if (exempt > 0) {
+        return (
+          `HRA exemption is already included in your employer's Sec 10 allowances ` +
+          `(₹${exempt.toLocaleString("en-IN")} certified in Form 16). ` +
+          `The fields below are only needed if your employer granted zero exemption.`
+        );
+      }
+      return null;
+    },
+    hideFields: (ti) => {
+      const exempt = ti.salaries.reduce((s, sal) => s + (sal.exempt_allowances ?? 0), 0);
+      return exempt > 0 ? ["hra_received", "hra_rent_paid", "hra_basic_da"] : [];
+    },
   },
   {
     title: "Capital gains",
@@ -99,7 +117,7 @@ function setPath(obj: any, path: string, value: number): any {
   return clone;
 }
 
-export function Reconcile({ sessionId, onNext, onBack }: Props) {
+export function Reconcile({ sessionId, onNext, onBack, onCoverageUpdate }: Props) {
   const { extractions } = useSession();
   const [ti, setTi] = useState<TaxInput | null>(null);
   const [discrepancies, setDiscrepancies] = useState<Discrepancy[]>([]);
@@ -112,6 +130,9 @@ export function Reconcile({ sessionId, onNext, onBack }: Props) {
     api.consolidatePreview(sessionId).then((r) => {
       setTi(r.tax_input);
       setDiscrepancies(r.discrepancies || []);
+      if (onCoverageUpdate && r.checklist_coverage) {
+        onCoverageUpdate(r.checklist_coverage);
+      }
     });
     api.reconcile(sessionId).then((r) => {
       setIssues(r.issues || []);
@@ -185,21 +206,35 @@ export function Reconcile({ sessionId, onNext, onBack }: Props) {
             </div>
           )}
 
-          {GROUPS.map((g) => (
-            <div className="review-group" key={g.title}>
-              <h4>{g.title}</h4>
-              {g.fields.map((f) => (
-                <EditRow
-                  key={f.path}
-                  label={f.label}
-                  path={f.path}
-                  ti={ti}
-                  onChange={update}
-                  discrepancy={discByField[f.path]}
-                />
-              ))}
-            </div>
-          ))}
+          {GROUPS.map((g) => {
+            const hidden = new Set(g.hideFields ? g.hideFields(ti) : []);
+            const groupNote = g.note ? g.note(ti) : null;
+            const visibleFields = g.fields.filter((f) => !hidden.has(f.path));
+            return (
+              <div className="review-group" key={g.title}>
+                <h4>{g.title}</h4>
+                {groupNote && (
+                  <div className="group-note" style={{
+                    fontSize: 12, color: "var(--text-faint)", marginBottom: 8,
+                    padding: "6px 10px", background: "var(--bg-muted, rgba(255,255,255,0.04))",
+                    borderRadius: 6, lineHeight: 1.5,
+                  }}>
+                    {groupNote}
+                  </div>
+                )}
+                {visibleFields.map((f) => (
+                  <EditRow
+                    key={f.path}
+                    label={f.label}
+                    path={f.path}
+                    ti={ti}
+                    onChange={update}
+                    discrepancy={discByField[f.path]}
+                  />
+                ))}
+              </div>
+            );
+          })}
         </div>
       )}
 

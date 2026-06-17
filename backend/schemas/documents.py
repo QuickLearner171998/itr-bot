@@ -41,6 +41,7 @@ class FieldSpec(BaseModel):
     type: FieldType = FieldType.MONEY
     description: str
     required: bool = False
+    display_only: bool = False  # informational only; not used in tax computation, not editable
 
 
 class DocSpec(BaseModel):
@@ -61,6 +62,7 @@ class ExtractedField(BaseModel):
     confidence: float = 0.0
     source_hint: str | None = None
     flagged: bool = False
+    display_only: bool = False  # mirrors FieldSpec.display_only; not editable in UI
 
 
 class ValidationIssue(BaseModel):
@@ -135,8 +137,28 @@ DOC_REGISTRY: dict[DocType, DocSpec] = {
             FieldSpec(name="gross_salary", label="Gross Salary (Sec 17(1)+17(2)+17(3))",
                       description="Total gross salary = salary_17_1 + perquisites_17_2 + profits_in_lieu_17_3.",
                       required=True),
-            FieldSpec(name="exempt_allowances", label="Exempt Allowances u/s 10",
-                      description="Total allowances exempt under section 10 (HRA, LTA, gratuity, leave encashment, etc.)."),
+            FieldSpec(name="exempt_allowances", label="Exempt Allowances u/s 10 (Total)",
+                      description="Total allowances exempt under section 10 (sum of all Sec 10 sub-rows a through g). "
+                                  "This total is used in tax computation."),
+            # --- Sec 10 sub-breakdown (display-only; all already included in exempt_allowances total) ---
+            FieldSpec(name="exempt_lta", label="  LTA / Travel Concession u/s 10(5)",
+                      display_only=True,
+                      description="Leave travel concession or assistance exempt u/s 10(5) — row (a) of the Sec 10 table."),
+            FieldSpec(name="exempt_hra", label="  HRA u/s 10(13A)",
+                      display_only=True,
+                      description="House rent allowance exempt u/s 10(13A) — row (e) of the Sec 10 table."),
+            FieldSpec(name="exempt_gratuity", label="  Gratuity u/s 10(10)",
+                      display_only=True,
+                      description="Death-cum-retirement gratuity exempt u/s 10(10) — row (b) of the Sec 10 table."),
+            FieldSpec(name="exempt_leave_encashment", label="  Leave Encashment u/s 10(10AA)",
+                      display_only=True,
+                      description="Commuted leave salary encashment exempt u/s 10(10AA) — row (d) of the Sec 10 table."),
+            FieldSpec(name="exempt_special_allowances", label="  Special Allowances u/s 10(14)",
+                      display_only=True,
+                      description="Other special allowances (telephone, uniform, children education, etc.) exempt u/s 10(14) — row (f) of the Sec 10 table."),
+            FieldSpec(name="exempt_other_sec10", label="  Other Sec 10 Exemptions",
+                      display_only=True,
+                      description="Any other exemption under Sec 10 not covered above — row (g) or the employer-certified breakdown table at the bottom of Part B."),
             FieldSpec(name="standard_deduction", label="Standard Deduction",
                       description="Standard deduction u/s 16(ia): ₹50,000 (old) or ₹75,000 (new)."),
             FieldSpec(name="professional_tax", label="Professional Tax u/s 16(iii)",

@@ -23,6 +23,7 @@ export interface ChecklistItem {
   why: string;
   how_to_get: string[];
   source: string;
+  covered_by?: string | null;
 }
 
 export interface FormDecision {
@@ -37,6 +38,7 @@ export interface ExtractedField {
   confidence: number;
   source_hint?: string | null;
   flagged: boolean;
+  display_only?: boolean;
 }
 
 export interface ValidationIssue {
