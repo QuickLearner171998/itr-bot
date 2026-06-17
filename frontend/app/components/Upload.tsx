@@ -242,6 +242,111 @@ function DocTypeSection({
   );
 }
 
+function PreviewModal({
+  upload,
+  onClose,
+}: {
+  upload: LocalUpload;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  return (
+    <div
+      className="preview-modal-overlay"
+      onClick={onClose}
+    >
+      <div
+        className="preview-modal-content"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button className="preview-modal-close" onClick={onClose} aria-label="Close preview">
+          ✕
+        </button>
+        <div className="preview-modal-title">{upload.fileName}</div>
+        <div className="preview-modal-body">
+          {upload.kind === "image" ? (
+            <img src={upload.previewUrl} alt={upload.fileName} style={{ maxWidth: "100%", maxHeight: "80vh", objectFit: "contain" }} />
+          ) : upload.kind === "pdf" && !upload.locked ? (
+            <embed
+              src={`${upload.previewUrl}#toolbar=1&navpanes=0`}
+              type="application/pdf"
+              style={{ width: "100%", height: "80vh" }}
+            />
+          ) : upload.kind === "excel" ? (
+            <div className="ut-preview-none">
+              <span style={{ fontSize: 48 }}>📊</span>
+              <span style={{ fontSize: 13, color: "var(--text-faint)", marginTop: 8 }}>
+                {upload.fileName.toLowerCase().endsWith(".csv") ? "CSV" : "Excel"} file — no browser preview available
+              </span>
+            </div>
+          ) : upload.locked ? (
+            <div className="ut-preview-none">
+              <span style={{ fontSize: 48 }}>🔒</span>
+              <span style={{ fontSize: 13, color: "var(--text-faint)", marginTop: 8 }}>Encrypted PDF — preview not available</span>
+            </div>
+          ) : (
+            <div className="ut-preview-none">
+              <span style={{ fontSize: 13, color: "var(--text-faint)" }}>No preview available</span>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FilePreviewModal({
+  upload,
+  onClose,
+}: {
+  upload: LocalUpload;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="preview-modal-overlay" onClick={onClose}>
+      <div className="preview-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="preview-modal-header">
+          <span className="preview-modal-title">{upload.fileName}</span>
+          <button className="preview-modal-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="preview-modal-body">
+          {upload.kind === "image" ? (
+            <img src={upload.previewUrl} alt={upload.fileName} />
+          ) : upload.kind === "pdf" && !upload.locked ? (
+            <embed src={`${upload.previewUrl}#toolbar=1&navpanes=0`} type="application/pdf" />
+          ) : upload.kind === "excel" ? (
+            <div className="preview-modal-none">
+              <span style={{ fontSize: 48 }}>📊</span>
+              <span>{upload.fileName.toLowerCase().endsWith(".csv") ? "CSV" : "Excel"} file — no browser preview available</span>
+            </div>
+          ) : upload.locked ? (
+            <div className="preview-modal-none">
+              <span style={{ fontSize: 48 }}>🔒</span>
+              <span>Encrypted PDF — preview unavailable</span>
+            </div>
+          ) : (
+            <div className="preview-modal-none">
+              <span style={{ fontSize: 48 }}>📄</span>
+              <span>No preview available</span>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function UploadTile({
   upload,
   live,
@@ -264,6 +369,8 @@ function UploadTile({
   const [open, setOpen] = useState(true);
   const [edits, setEdits] = useState<Record<string, any>>({});
   const [saved, setSaved] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
 
   // Collapse automatically once a document is fully validated; expand if it
   // needs review so issues are visible.
@@ -286,11 +393,19 @@ function UploadTile({
   };
 
   return (
+    <>
+    {previewing && <PreviewModal upload={upload} onClose={() => setPreviewing(false)} />}
     <div className={`upload-tile ${status}`}>
       <button className="ut-head" onClick={() => setOpen((o) => !o)}>
         <span className="ut-name">
           <span className="dsh-caret">{open ? "▾" : "▸"}</span>
-          {upload.fileName}
+          <span
+            className="ut-filename-link"
+            onClick={(e) => { e.stopPropagation(); setPreviewing(true); }}
+            title="Click to preview"
+          >
+            {upload.fileName}
+          </span>
         </span>
         <span className="ut-status">
           {extraction && (
@@ -305,7 +420,12 @@ function UploadTile({
 
       {open && (
         <div className="ut-body">
-          <div className="ut-preview">
+          {previewOpen && <FilePreviewModal upload={upload} onClose={() => setPreviewOpen(false)} />}
+          <div
+            className="ut-preview ut-preview-clickable"
+            onClick={() => setPreviewOpen(true)}
+            title="Click to enlarge preview"
+          >
             {upload.kind === "image" ? (
               <img src={upload.previewUrl} alt={upload.fileName} />
             ) : upload.kind === "pdf" && !upload.locked ? (
@@ -428,6 +548,7 @@ function UploadTile({
         </div>
       )}
     </div>
+    </>
   );
 }
 
