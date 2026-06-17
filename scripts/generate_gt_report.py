@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import math
 import os
 import pathlib
 import sys
@@ -42,8 +41,8 @@ _SESSION = "gt_report_independent"
 # ---------------------------------------------------------------------------
 
 def _round10(x: float) -> float:
-    """Round down to nearest 10 (per Income Tax Act rounding rule)."""
-    return math.floor(x / 10) * 10
+    """Round to the nearest multiple of ten (Sec 288A/288B)."""
+    return float(round(x / 10.0) * 10)
 
 
 # Old regime slabs (age < 60)
@@ -91,6 +90,48 @@ _CESS_RATE = 0.04
 _LTCG_112A_EXEMPT = 125_000
 _LTCG_112A_RATE = 0.125
 _STCG_111A_RATE = 0.20
+_LTCG_OTHER_RATE = 0.125   # Sec 112 (post 23-Jul-2024) — listed/unlisted non-112A LTCG
+_VDA_RATE = 0.30           # Sec 115BBH virtual digital assets
+
+# Chapter VI-A caps (old regime)
+_CAP_80C = 150_000
+_CAP_80CCD1B = 50_000
+_CAP_80D_PARENTS = 25_000
+_CAP_80D_PARENTS_SENIOR = 50_000
+_CAP_80EEA = 150_000
+_CAP_80DD_NORMAL = 75_000
+_CAP_80DD_SEVERE = 125_000
+_CAP_80U_NORMAL = 75_000
+_CAP_80U_SEVERE = 125_000
+_CAP_80DDB_NORMAL = 40_000
+_CAP_80DDB_SENIOR = 100_000
+_CAP_80TTA = 10_000
+_CAP_80TTB = 50_000        # seniors: savings + FD interest
+_CAP_80GG_ANNUAL = 60_000
+_RATE_80GG_INCOME = 0.25
+_RATE_80GG_RENT_MINUS_INCOME = 0.10
+_RATE_80G_QUALIFYING = 0.10
+_EMPLOYER_NPS_CAP_NEW = 0.14   # 80CCD(2): 14% of salary (new regime)
+_EMPLOYER_NPS_CAP_OLD = 0.10   # 10% (old / private)
+_HOME_LOAN_SELF_OCCUPIED_CAP = 200_000
+_HP_STD_DEDUCTION_RATE = 0.30
+
+# Family pension standard deduction (Sec 57(iia))
+_FP_DED_RATE = 1.0 / 3.0
+_FP_CAP_OLD = 15_000
+_FP_CAP_NEW = 25_000
+
+# Surcharge: (upper_bound_inclusive, rate) cumulative. Old regime full ladder;
+# new regime caps at 25%. Surcharge on 111A/112A gains capped at 15%.
+_SURCHARGE_SLABS = [
+    (5_000_000,  0.00),
+    (10_000_000, 0.10),
+    (20_000_000, 0.15),
+    (50_000_000, 0.25),
+    (float("inf"), 0.37),
+]
+_NEW_SURCHARGE_CAP = 0.25
+_CG_SURCHARGE_CAP = 0.15
 
 
 def _slab_tax(income: float, slabs: list[tuple]) -> float:
@@ -127,27 +168,25 @@ def _basic_exemption_old(age: int) -> float:
 
 
 def _surcharge_rate(total_income: float, regime: str) -> float:
-    """Marginal surcharge rate (before marginal relief)."""
+    """Marginal surcharge rate (before marginal relief), new regime capped 25%."""
+    rate = 0.0
+    for upper, slab_rate in _SURCHARGE_SLABS:
+        if total_income <= upper:
+            rate = slab_rate
+            break
     if regime == "new":
-        # New regime: flat 25% for income > 5Cr; 15% for > 2Cr; 10% for > 50L
-        if total_income > 50_000_000:
-            return 0.25
-        if total_income > 20_000_000:
-            return 0.15
-        if total_income > 5_000_000:
-            return 0.10
-        return 0.0
-    else:
-        # Old regime
-        if total_income > 50_000_000:
-            return 0.37
-        if total_income > 20_000_000:
-            return 0.25
-        if total_income > 10_000_000:
-            return 0.15
-        if total_income > 5_000_000:
-            return 0.10
-        return 0.0
+        rate = min(rate, _NEW_SURCHARGE_CAP)
+    return rate
+
+
+def _surcharge_threshold(total_income: float) -> float:
+    """Lower bound of the surcharge band ``total_income`` falls into."""
+    lower = 0.0
+    for upper, _ in _SURCHARGE_SLABS:
+        if total_income <= upper:
+            return lower
+        lower = upper
+    return lower
 
 
 def _hra_exemption(hra_received: float, rent_paid: float, basic_da: float,
@@ -162,27 +201,109 @@ def _hra_exemption(hra_received: float, rent_paid: float, basic_da: float,
     return max(0.0, min(limit1, limit2, limit3))
 
 
-def _80tta(savings_interest: float) -> float:
-    return min(savings_interest, 10_000)
+def _chapter_via(raw: dict, age: int, gti_normal: float,
+                 savings_interest: float, fd_interest: float,
+                 gross_salary: float, hra_exempt: float) -> tuple[float, list[tuple[str, float]]]:
+    """Old-regime Chapter VI-A deductions, independently capped per tax law.
+
+    Args:
+        raw: Consolidated extracted figures.
+        age: Filer age (drives senior 80D/80TTB/80DDB limits).
+        gti_normal: Slab gross total income (for 80G/80GG income-based limits).
+        savings_interest: Savings-bank interest (80TTA / part of 80TTB base).
+        fd_interest: Deposit interest (80TTB base for seniors).
+        gross_salary: Salary base for the 80CCD(2) percentage cap.
+        hra_exempt: HRA exemption claimed (blocks 80GG when > 0).
+
+    Returns:
+        ``(total_deduction, [(label, amount), ...])`` with one entry per
+        non-zero component.
+    """
+    def g(k):
+        v = raw.get(k)
+        return float(v) if v not in (None, "") else 0.0
+
+    def yes(k):
+        return str(raw.get(k) or "").strip().lower().startswith(("y", "t"))
+
+    is_senior = age >= 60
+    lines: list[tuple[str, float]] = []
+
+    eighty_c = min(g("amount_80c"), _CAP_80C)
+    eighty_ccd1b = min(g("amount_80ccd1b"), _CAP_80CCD1B)
+    employer_nps = min(g("amount_80ccd2"), gross_salary * _EMPLOYER_NPS_CAP_OLD)
+    d80_self = min(g("amount_80d_self"), _CAP_80D_PARENTS_SENIOR if is_senior else _CAP_80D_PARENTS)
+    d80_par = min(g("amount_80d_parents"), _CAP_80D_PARENTS_SENIOR if is_senior else _CAP_80D_PARENTS)
+
+    if is_senior:
+        eighty_tt = min(savings_interest + fd_interest, _CAP_80TTB)
+        tt_label = "80TTB Interest (Senior; cap ₹50,000)"
+    else:
+        eighty_tt = min(savings_interest, _CAP_80TTA)
+        tt_label = "80TTA Savings Interest (cap ₹10,000)"
+
+    eighty_e = g("amount_80e")
+    eighty_eea = min(g("amount_80eea"), _CAP_80EEA)
+    eighty_dd = (_CAP_80DD_SEVERE if yes("amount_80dd_severe") else _CAP_80DD_NORMAL) if g("amount_80dd") > 0 else 0.0
+    eighty_u = (_CAP_80U_SEVERE if yes("amount_80u_severe") else _CAP_80U_NORMAL) if g("amount_80u") > 0 else 0.0
+    eighty_ddb = min(g("amount_80ddb"), _CAP_80DDB_SENIOR if is_senior else _CAP_80DDB_NORMAL)
+
+    eighty_gg = 0.0
+    if g("amount_80gg") > 0 and hra_exempt <= 0:
+        eighty_gg = max(0.0, min(_CAP_80GG_ANNUAL, _RATE_80GG_INCOME * gti_normal,
+                                 g("amount_80gg") - _RATE_80GG_RENT_MINUS_INCOME * gti_normal))
+
+    base = (eighty_c + eighty_ccd1b + employer_nps + d80_self + d80_par + eighty_tt
+            + eighty_e + eighty_eea + eighty_dd + eighty_u + eighty_ddb + eighty_gg)
+    no_limit = g("donation_100_no_limit") + 0.5 * g("donation_50_no_limit")
+    pool = max(0.0, _RATE_80G_QUALIFYING * max(0.0, gti_normal - base))
+    d100 = min(g("donation_100_limit"), pool)
+    d50 = min(g("donation_50_limit"), pool - d100)
+    eighty_g = no_limit + d100 + 0.5 * d50
+
+    for label, amt in [
+        (f"80C (incl. home-loan principal; cap ₹{_CAP_80C:,})", eighty_c),
+        (f"80CCD(1B) NPS Self (cap ₹{_CAP_80CCD1B:,})", eighty_ccd1b),
+        ("80CCD(2) Employer NPS (cap 10% salary)", employer_nps),
+        ("80D Health Insurance — Self/Family", d80_self),
+        ("80D Health Insurance — Parents", d80_par),
+        (tt_label, eighty_tt),
+        ("80E Education Loan Interest", eighty_e),
+        (f"80EEA Additional Home-Loan Interest (cap ₹{_CAP_80EEA:,})", eighty_eea),
+        ("80DD Disabled Dependent", eighty_dd),
+        ("80U Self Disability", eighty_u),
+        ("80DDB Specified-Disease Treatment", eighty_ddb),
+        ("80GG Rent Paid (no HRA)", eighty_gg),
+        ("80G Donations", eighty_g),
+    ]:
+        if amt > 0:
+            lines.append((label, amt))
+
+    return base + eighty_g, lines
 
 
 def _compute_gt(raw: dict, age: int) -> dict:
-    """Independent GT computation.
+    """Independent FY 2025-26 tax computation for both regimes.
+
+    Reimplements Indian income-tax rules from first principles over the
+    consolidated extracted figures: all income heads (salary, house property,
+    other sources, professional fees, capital gains), Chapter VI-A deductions,
+    Sec 87A rebate with new-regime marginal relief, surcharge with the 15%
+    capital-gains cap and marginal relief, and cess.
 
     Args:
-        raw: Flat dict of extracted numbers (keys match field names from DocType specs).
+        raw: Consolidated extracted figures (see :func:`_consolidate`).
         age: Filer age.
 
     Returns:
-        Dict with full step-by-step breakdown for old and new regimes.
+        Dict keyed ``"old"``/``"new"`` with a step trace and all totals.
     """
     def g(k, default=0.0):
         v = raw.get(k, default)
-        return float(v) if v is not None else default
+        return float(v) if v not in (None, "") else default
 
-    # --- Income ---
-    gross_salary     = g("gross_salary")
-    exempt_allowances = g("exempt_allowances")   # Sec 10 (employer-certified in Form 16)
+    gross_salary      = g("gross_salary")
+    exempt_allowances = g("exempt_allowances")
     professional_tax  = g("professional_tax")
     hra_received      = g("hra_received")
     hra_rent_paid     = g("hra_rent_paid")
@@ -191,206 +312,194 @@ def _compute_gt(raw: dict, age: int) -> dict:
 
     savings_interest = g("savings_interest")
     fd_interest      = g("fd_interest")
+    bond_interest    = g("interest_on_bonds")
     dividend         = g("dividend")
-    other_income     = g("other_income")
+    it_refund_int    = g("interest_on_it_refund")
     family_pension   = g("family_pension")
-    let_out_rent     = g("let_out_annual_rent")
-    municipal_taxes  = g("let_out_municipal_taxes")
+    other_income     = g("other_income")
+    professional_fees = g("professional_fees")
 
-    stcg_111a = g("stcg_111a")
-    ltcg_112a = g("ltcg_112a")
+    let_out_rent    = g("let_out_annual_rent")
+    municipal_taxes = g("let_out_municipal_taxes")
+    home_interest   = g("home_loan_interest")
+    self_occupied   = bool(raw.get("home_loan_self_occupied", False))
+
+    stcg_111a  = g("stcg_111a")
+    ltcg_112a  = g("ltcg_112a")
     stcg_other = g("stcg_other")
     ltcg_other = g("ltcg_other")
     vda_gain   = g("vda_gain")
 
-    # --- Deductions ---
-    d_80c       = min(g("amount_80c"), 150_000)
-    d_80ccd1b   = min(g("amount_80ccd1b"), 50_000)
-    d_80ccd2    = g("amount_80ccd2")            # no cap (employer NPS)
-    d_80d_self  = min(g("amount_80d_self"), 25_000 if age < 60 else 50_000)
-    d_80d_par   = min(g("amount_80d_parents"), 25_000)   # assume parents < 60
-    d_80e       = g("amount_80e")
-    d_80eea     = g("amount_80eea")
+    taxes_paid = (g("tds_total") + g("tcs_total") + g("advance_tax")
+                  + g("self_assessment_tax") + g("tds_on_property_purchase"))
 
-    # --- Taxes paid ---
-    tds_total  = g("tds_total")
-    advance_tax = g("advance_tax")
-    self_assess = g("self_assessment_tax")
-    taxes_paid  = tds_total + advance_tax + self_assess
-
-    results = {}
+    results: dict = {}
 
     for regime in ("old", "new"):
-        steps = []
+        steps: list[dict] = []
 
         def add(label, amount, kind="info"):
             steps.append({"label": label, "amount": amount, "kind": kind})
 
-        # Salary
+        std_ded = _NEW_STD_DEDUCTION if regime == "new" else _OLD_STD_DEDUCTION
         add("Gross Salary", gross_salary, "add")
 
+        hra_exempt = 0.0
         if regime == "old":
-            # Sec 10 exemptions (employer-certified)
             sec10 = exempt_allowances
-            # If no employer exemption, recompute HRA from rent receipt
-            hra_ex = 0.0
             if sec10 <= 0:
-                hra_ex = _hra_exemption(hra_received, hra_rent_paid, hra_basic_da, hra_is_metro)
-                sec10 = hra_ex
+                hra_exempt = _hra_exemption(hra_received, hra_rent_paid, hra_basic_da, hra_is_metro)
+                sec10 = hra_exempt
             if sec10 > 0:
                 add("Less: Sec 10 Exempt Allowances (incl. HRA/LTA)", sec10, "subtract")
-            std_ded = _OLD_STD_DEDUCTION
             add("Less: Standard Deduction u/s 16(ia)", std_ded, "subtract")
-            add("Less: Professional Tax u/s 16(iii)", professional_tax, "subtract")
+            if professional_tax:
+                add("Less: Professional Tax u/s 16(iii)", professional_tax, "subtract")
             net_salary = max(0.0, gross_salary - sec10 - std_ded - professional_tax)
         else:
-            # New regime: no Sec 10 exemptions, no professional tax deduction
-            std_ded = _NEW_STD_DEDUCTION
             add("Less: Standard Deduction u/s 16(ia)", std_ded, "subtract")
             net_salary = max(0.0, gross_salary - std_ded)
-
-        add("Net Salary", net_salary, "info")
-
-        # Other income
-        if savings_interest:
-            add("Savings Interest", savings_interest, "add")
-        if fd_interest:
-            add("FD / RD Interest", fd_interest, "add")
-        if dividend:
-            add("Dividend", dividend, "add")
-        if family_pension:
-            std_fp = min(family_pension * 0.333, 15_000)
-            add("Family Pension (gross)", family_pension, "add")
-            add("Less: Standard deduction on family pension", std_fp, "subtract")
-            family_pension = family_pension - std_fp
-        if other_income:
-            add("Other income", other_income, "add")
+        add("Income from Salary", net_salary, "info")
 
         # House property
         hp_income = 0.0
         if let_out_rent > 0:
-            nav = let_out_rent - municipal_taxes
-            std_hp = nav * 0.30   # 30% standard deduction on NAV
-            hp_income = nav - std_hp
-            add("Let-out rent", let_out_rent, "add")
-            add("Less: Municipal taxes", municipal_taxes, "subtract")
-            add("Less: 30% standard deduction on house property", std_hp, "subtract")
+            nav = max(0.0, let_out_rent - municipal_taxes)
+            std_hp = nav * _HP_STD_DEDUCTION_RATE
+            net_hp = nav - std_hp - home_interest
+            hp_income = max(net_hp, -_HOME_LOAN_SELF_OCCUPIED_CAP) if regime == "old" else max(net_hp, 0.0)
+            add("Let-out Annual Rent", let_out_rent, "add")
+            if municipal_taxes:
+                add("Less: Municipal Taxes", municipal_taxes, "subtract")
+            add("Less: 30% Standard Deduction on NAV", std_hp, "subtract")
+            if home_interest:
+                add("Less: Home-Loan Interest u/s 24(b)", home_interest, "subtract")
             add("Income from House Property", hp_income, "info")
+        elif self_occupied and home_interest and regime == "old":
+            hp_income = -min(home_interest, _HOME_LOAN_SELF_OCCUPIED_CAP)
+            add("House Property: Self-Occupied Loss u/s 24(b)", hp_income, "add")
 
-        # Slab income (excluding special-rate CG)
-        slab_income = (net_salary + savings_interest + fd_interest + dividend
-                       + family_pension + other_income + hp_income + stcg_other)
+        # Other sources
+        fp_cap = _FP_CAP_NEW if regime == "new" else _FP_CAP_OLD
+        fp_ded = min(family_pension * _FP_DED_RATE, fp_cap) if family_pension else 0.0
+        other_sources = (savings_interest + fd_interest + bond_interest + dividend
+                         + it_refund_int + family_pension + other_income)
+        if other_sources:
+            add("— Income from Other Sources —", 0, "info")
+            for lbl, amt in [("Savings Interest", savings_interest), ("FD / Deposit Interest", fd_interest),
+                             ("Interest on Bonds", bond_interest), ("Dividend", dividend),
+                             ("Interest on IT Refund", it_refund_int), ("Family Pension", family_pension),
+                             ("Other Income", other_income)]:
+                if amt:
+                    add(f"  {lbl}", amt, "add")
+            if fp_ded:
+                add("  Less: Family Pension Deduction (Sec 57)", fp_ded, "subtract")
+        if professional_fees:
+            add("Income from Professional Services (Sec 194J)", professional_fees, "add")
+        if stcg_other:
+            add("STCG — slab rate (other than 111A)", stcg_other, "add")
 
-        # Capital gains (special rate)
-        ltcg_112a_taxable = max(0.0, ltcg_112a - _LTCG_112A_EXEMPT)
-        if ltcg_112a:
-            add(f"LTCG u/s 112A (₹1,25,000 exempt, 12.5%)", ltcg_112a, "add")
-        if stcg_111a:
-            add("STCG u/s 111A (20%)", stcg_111a, "add")
-        if vda_gain:
-            add("Crypto/VDA gains (30%)", vda_gain, "add")
+        gti_normal = (net_salary + hp_income + other_sources - fp_ded
+                      + professional_fees + stcg_other)
+        add("Gross Total Income (slab)", gti_normal, "total")
 
-        gti = slab_income + ltcg_112a_taxable + stcg_111a + ltcg_other + vda_gain
-        add("Gross Total Income", gti, "info")
-
-        # Chapter VI-A deductions (only old regime)
-        total_ded = 0.0
+        # Chapter VI-A
         if regime == "old":
+            total_ded, ded_lines = _chapter_via(
+                raw, age, gti_normal, savings_interest, fd_interest, gross_salary, hra_exempt)
+        else:
+            total_ded = min(g("amount_80ccd2"), gross_salary * _EMPLOYER_NPS_CAP_NEW)
+            ded_lines = [("80CCD(2) Employer NPS (cap 14% salary)", total_ded)] if total_ded > 0 else []
+        total_ded = min(total_ded, max(0.0, gti_normal))
+        if ded_lines:
             add("— Chapter VI-A Deductions —", 0, "info")
-            if d_80c:
-                add("80C (cap ₹1,50,000)", d_80c, "subtract"); total_ded += d_80c
-            if d_80ccd1b:
-                add("80CCD(1B) NPS self (cap ₹50,000)", d_80ccd1b, "subtract"); total_ded += d_80ccd1b
-            if d_80ccd2:
-                add("80CCD(2) Employer NPS", d_80ccd2, "subtract"); total_ded += d_80ccd2
-            if d_80d_self:
-                add("80D Health Insurance self/family", d_80d_self, "subtract"); total_ded += d_80d_self
-            if d_80d_par:
-                add("80D Health Insurance parents", d_80d_par, "subtract"); total_ded += d_80d_par
-            tta = _80tta(savings_interest)
-            if tta:
-                add("80TTA Savings Interest (cap ₹10,000)", tta, "subtract"); total_ded += tta
-            if d_80e:
-                add("80E Education Loan Interest", d_80e, "subtract"); total_ded += d_80e
-        else:
-            # New regime: only 80CCD(2) allowed
-            if d_80ccd2:
-                add("80CCD(2) Employer NPS (allowed in new regime)", d_80ccd2, "subtract")
-                total_ded += d_80ccd2
+            for lbl, amt in ded_lines:
+                add(f"  {lbl}", amt, "subtract")
+            add("Total Deductions (Chapter VI-A)", total_ded, "subtract")
 
-        taxable_income = max(0.0, gti - total_ded)
-        # For slab tax computation, split off special-rate CG
-        taxable_slab = max(0.0, slab_income - (total_ded if regime == "old" else d_80ccd2))
-        add("Taxable Income (slab)", taxable_slab, "info")
+        normal_income = _round10(max(0.0, gti_normal - total_ded))
+        add("Taxable Income (slab)", normal_income, "total")
 
-        # Tax on slab income
+        slabs = _NEW_SLABS if regime == "new" else _old_slabs(age)
+        slab_tax = _slab_tax(normal_income, slabs)
+        add("Tax on Slab Income", slab_tax, "tax")
+
+        # Capital gains with basic-exemption shortfall set-off (residents).
+        basic_exempt = _NEW_BASIC_EXEMPTION if regime == "new" else _basic_exemption_old(age)
+        shortfall = max(0.0, basic_exempt - normal_income)
+        stcg_111a_t = stcg_111a
+        used = min(shortfall, stcg_111a_t); stcg_111a_t -= used; shortfall -= used
+        ltcg_112a_t = max(0.0, ltcg_112a - _LTCG_112A_EXEMPT)
+        used = min(shortfall, ltcg_112a_t); ltcg_112a_t -= used; shortfall -= used
+
+        tax_111a = stcg_111a_t * _STCG_111A_RATE
+        tax_112a = ltcg_112a_t * _LTCG_112A_RATE
+        tax_ltcg_other = ltcg_other * _LTCG_OTHER_RATE
+        tax_vda = vda_gain * _VDA_RATE
+        cg_tax = tax_111a + tax_112a + tax_ltcg_other + tax_vda
+        special_income = stcg_111a + ltcg_112a + ltcg_other + vda_gain
+        total_income = normal_income + special_income
+
+        if special_income:
+            add("— Capital Gains (special rates) —", 0, "info")
+            if stcg_111a:
+                add("  STCG u/s 111A (20%)", stcg_111a, "add")
+            if ltcg_112a:
+                add("  LTCG u/s 112A (₹1,25,000 exempt, 12.5%)", ltcg_112a, "add")
+            if ltcg_other:
+                add("  LTCG other (Sec 112, 12.5%)", ltcg_other, "add")
+            if vda_gain:
+                add("  VDA / Crypto Gains (30%)", vda_gain, "add")
+            add("Tax on Capital Gains (special rates)", cg_tax, "tax")
+
+        # Rebate u/s 87A (against slab tax only) + new-regime marginal relief.
+        rebate = mr_rebate = 0.0
         if regime == "old":
-            slab_tax = _slab_tax(taxable_slab, _old_slabs(age))
+            if total_income <= _OLD_REBATE87A_LIMIT:
+                rebate = min(slab_tax, _OLD_REBATE87A_AMOUNT)
         else:
-            slab_tax = _slab_tax(taxable_slab, _NEW_SLABS)
-        add("Tax on Slab Income", slab_tax, "info")
-
-        # Tax on special-rate CG
-        cg_tax = 0.0
-        if ltcg_112a_taxable > 0:
-            t = ltcg_112a_taxable * _LTCG_112A_RATE
-            cg_tax += t
-            add(f"  Tax on LTCG u/s 112A (12.5%)", t, "info")
-        if stcg_111a > 0:
-            t = stcg_111a * _STCG_111A_RATE
-            cg_tax += t
-            add(f"  Tax on STCG u/s 111A (20%)", t, "info")
-        if ltcg_other > 0:
-            t = ltcg_other * 0.20
-            cg_tax += t
-            add(f"  Tax on LTCG other (20%)", t, "info")
-        if vda_gain > 0:
-            t = vda_gain * 0.30
-            cg_tax += t
-            add(f"  Tax on VDA gains (30%)", t, "info")
-
-        tax_before_rebate = slab_tax + cg_tax
-
-        # Rebate u/s 87A
-        rebate = 0.0
-        if regime == "old":
-            if taxable_income <= _OLD_REBATE87A_LIMIT:
-                rebate = min(tax_before_rebate, _OLD_REBATE87A_AMOUNT)
-        else:
-            if taxable_slab <= _NEW_REBATE87A_LIMIT:
+            if total_income <= _NEW_REBATE87A_LIMIT:
                 rebate = min(slab_tax, _NEW_REBATE87A_AMOUNT)
+            else:
+                excess = total_income - _NEW_REBATE87A_LIMIT
+                if 0 < excess < slab_tax:
+                    mr_rebate = slab_tax - excess
         if rebate:
             add("Less: Rebate u/s 87A", rebate, "subtract")
+        if mr_rebate:
+            add("Less: Marginal Relief (87A)", mr_rebate, "subtract")
 
-        tax_after_rebate = max(0.0, tax_before_rebate - rebate)
+        slab_tax_after = max(0.0, slab_tax - rebate - mr_rebate)
+        tax_after_rebate = slab_tax_after + cg_tax
 
-        # Surcharge
-        total_income_for_surcharge = gti - total_ded  # taxable income
-        sr_rate = _surcharge_rate(total_income_for_surcharge, regime)
-        surcharge = tax_after_rebate * sr_rate
+        # Surcharge with 15% CG cap and marginal relief at the band threshold.
+        surcharge, mr_sc = _surcharge_with_relief(
+            slab_tax_after, tax_111a + tax_112a, tax_ltcg_other + tax_vda,
+            cg_tax, total_income, special_income, regime, slabs)
         if surcharge:
-            add(f"Surcharge ({sr_rate*100:.0f}%)", surcharge, "add")
+            add("Add: Surcharge", surcharge, "add")
+        if mr_sc:
+            add("Less: Marginal Relief (Surcharge)", mr_sc, "subtract")
 
-        # Cess
         cess = (tax_after_rebate + surcharge) * _CESS_RATE
-        add("Health & Education Cess (4%)", cess, "add")
+        add("Add: Health & Education Cess (4%)", cess, "add")
 
         total_tax = _round10(tax_after_rebate + surcharge + cess)
-        add("Total Tax Liability", total_tax, "info")
-        add("Less: TDS / Advance Tax Paid", taxes_paid, "subtract")
+        add("Total Tax Liability", total_tax, "total")
+        add("Less: Taxes Paid (TDS/TCS/Advance/SAT)", taxes_paid, "subtract")
 
-        payable = total_tax - taxes_paid
-        add("Tax Payable / (Refund)", payable, "info")
+        payable = _round10(total_tax - taxes_paid)
+        add("Tax Payable / (Refund)", payable, "total")
 
         results[regime] = {
             "steps": steps,
-            "gross_total_income": gti,
-            "taxable_income": taxable_income,
+            "gross_total_income": gti_normal + special_income,
+            "taxable_income": total_income,
             "total_deductions": total_ded,
             "slab_tax": slab_tax,
             "cg_tax": cg_tax,
-            "tax_before_rebate": tax_before_rebate,
-            "rebate_87a": rebate,
+            "tax_before_rebate": slab_tax + cg_tax,
+            "rebate_87a": rebate + mr_rebate,
             "surcharge": surcharge,
             "cess": cess,
             "total_tax": total_tax,
@@ -399,6 +508,49 @@ def _compute_gt(raw: dict, age: int) -> dict:
         }
 
     return results
+
+
+def _surcharge_with_relief(
+    slab_tax_after: float, capped_cg_tax: float, uncapped_cg_tax: float,
+    cg_tax_total: float, total_income: float, special_income: float,
+    regime: str, slabs: list[tuple],
+) -> tuple[float, float]:
+    """Surcharge with the 15% cap on 111A/112A gains and marginal relief.
+
+    Marginal relief ensures the rise in (tax + surcharge) over the band
+    threshold does not exceed the income above that threshold.
+
+    Args:
+        slab_tax_after: Slab tax after 87A rebate.
+        capped_cg_tax: Tax on 111A + 112A gains (surcharge capped at 15%).
+        uncapped_cg_tax: Tax on other LTCG + VDA gains (full surcharge rate).
+        cg_tax_total: Total capital-gains tax.
+        total_income: Normal + special income (drives the surcharge rate).
+        special_income: Gross special-rate gains (for the threshold split).
+        regime: "old" or "new".
+        slabs: Slab table for re-computing tax at the band threshold.
+
+    Returns:
+        ``(surcharge, marginal_relief)``.
+    """
+    rate = _surcharge_rate(total_income, regime)
+    if rate == 0.0:
+        return 0.0, 0.0
+
+    cg_rate = min(rate, _CG_SURCHARGE_CAP)
+    surcharge = slab_tax_after * rate + uncapped_cg_tax * rate + capped_cg_tax * cg_rate
+
+    threshold = _surcharge_threshold(total_income)
+    prev_rate = _surcharge_rate(threshold, regime) if threshold > 0 else 0.0
+    normal_at_t = max(0.0, threshold - special_income)
+    slab_tax_at_t = _slab_tax(normal_at_t, slabs)
+    sc_at_t = (slab_tax_at_t + uncapped_cg_tax) * prev_rate + capped_cg_tax * min(prev_rate, _CG_SURCHARGE_CAP)
+
+    total_now = slab_tax_after + cg_tax_total + surcharge
+    total_at_t = slab_tax_at_t + cg_tax_total + sc_at_t
+    allowed = total_income - threshold
+    marginal_relief = max(0.0, (total_now - total_at_t) - allowed)
+    return surcharge - marginal_relief, marginal_relief
 
 
 # ---------------------------------------------------------------------------
@@ -464,57 +616,130 @@ async def _extract_all(
     return results
 
 
-def _merge_raw(extracted: list) -> dict:
-    """Flatten extracted fields from all docs into a single raw dict.
+def _consolidate(extracted: list) -> dict:
+    """Independently consolidate per-document extractions into one raw dict.
 
-    Fields from higher-priority docs overwrite lower-priority ones.
-    Priority: Form16 > 26AS > AIS > others (for the same key).
-    For multi-employer docs, salary totals are summed.
+    Reimplements the cross-document reconciliation from tax-reporting first
+    principles (not from the app's ``consolidate.py``):
+
+      * Salary, TDS and Form-16 deductions are summed across all Form 16s.
+      * Where the same figure is reported by multiple sources (e.g. interest in
+        both the bank certificate and AIS, salary in Form 16 vs AIS), the larger
+        value is taken so nothing is under-reported.
+      * Capital gains and donations are summed across all brokers / receipts.
+      * Home-loan principal is folded into 80C; let-out rent drives house
+        property income.
+
+    Args:
+        extracted: List of ``(DocType, filename, DocumentExtraction)``.
+
+    Returns:
+        Flat raw dict consumed by :func:`_compute_gt`.
     """
-    PRIORITY = {
-        DocType.FORM16: 10, DocType.FORM26AS: 8, DocType.AIS: 6,
-        DocType.BROKER_PNL: 5, DocType.INTEREST_CERT: 5,
-        DocType.HOME_LOAN_CERT: 4, DocType.DEDUCTION_PROOF: 4,
-        DocType.RENT_RECEIPT: 4, DocType.FORM16A: 3,
-    }
+    def n(v) -> float:
+        if v in (None, ""):
+            return 0.0
+        if isinstance(v, (int, float)):
+            return float(v)
+        s = str(v).replace(",", "").replace("\u20b9", "").strip()
+        return float(s) if s.replace(".", "", 1).lstrip("-").isdigit() else 0.0
 
-    # Accumulate salary components across multiple Form 16s
-    salary_keys = {"gross_salary", "exempt_allowances", "professional_tax", "tds", "tds_total"}
+    by_type: dict[DocType, list[dict]] = {}
+    for dt, _fn, ext in extracted:
+        by_type.setdefault(dt, []).append({f.name: f.value for f in ext.fields})
+
+    f16 = by_type.get(DocType.FORM16, [])
+    ais = by_type.get(DocType.AIS, [{}])[0] if by_type.get(DocType.AIS) else {}
+    f26 = by_type.get(DocType.FORM26AS, [{}])[0] if by_type.get(DocType.FORM26AS) else {}
     raw: dict = {}
-    seen_priority: dict[str, int] = {}
-    salary_totals: dict[str, float] = {k: 0.0 for k in salary_keys}
-    form16_count = 0
 
-    for dt, fname, ext in extracted:
-        pri = PRIORITY.get(dt, 3)
-        fmap = {f.name: f.value for f in ext.fields if f.value not in (None, "")}
+    # --- Salary (sum Form 16s) + AIS reconcile (take the larger salary) ---
+    f16_gross = sum(n(v.get("gross_salary")) for v in f16)
+    raw["gross_salary"] = max(f16_gross, n(ais.get("salary_reported")))
+    raw["exempt_allowances"] = sum(n(v.get("exempt_allowances")) for v in f16)
+    raw["professional_tax"] = sum(n(v.get("professional_tax")) for v in f16)
+    f16_tds = sum(n(v.get("tds")) for v in f16)
+    regimes = [str(v.get("regime") or "").strip().lower() for v in f16]
+    raw["filing_regime"] = "old" if any(r.startswith("o") for r in regimes) else "new"
 
-        if dt == DocType.FORM16:
-            form16_count += 1
-            for k in salary_keys:
-                v = fmap.get(k, fmap.get("tds_deducted") if k == "tds" else None)
-                if v is not None:
-                    try:
-                        salary_totals[k] += float(v)
-                    except (TypeError, ValueError):
-                        pass
-            # Non-salary Form16 fields: take last seen (multiple employers)
-            for k, v in fmap.items():
-                if k not in salary_keys and k != "tds_deducted":
-                    if pri >= seen_priority.get(k, -1):
-                        raw[k] = v
-                        seen_priority[k] = pri
-        else:
-            for k, v in fmap.items():
-                if pri >= seen_priority.get(k, -1):
-                    raw[k] = v
-                    seen_priority[k] = pri
+    # Form-16 Chapter VI-A (statutory caps guard against mis-read rows).
+    f16_80c = max((min(n(v.get("deduction_80c")), _CAP_80C) for v in f16), default=0.0)
+    f16_80ccd1b = max((min(n(v.get("deduction_80ccd1b")), _CAP_80CCD1B) for v in f16), default=0.0)
+    f16_80ccd2 = max((n(v.get("deduction_80ccd2")) for v in f16), default=0.0)
+    f16_80d = max((min(n(v.get("deduction_80d")), 50_000) for v in f16), default=0.0)
 
-    # Merge summed salary totals back
-    if form16_count > 0:
-        raw.update(salary_totals)
-        # tds_total from Form16 is sum of per-employer TDS
-        raw["tds_total"] = salary_totals.get("tds_total") or salary_totals.get("tds", 0.0)
+    # --- Deduction proofs ---
+    proofs = by_type.get(DocType.DEDUCTION_PROOF, [])
+    def proof_max(key):
+        return max((n(v.get(key)) for v in proofs), default=0.0)
+
+    # --- Home loan / house property ---
+    home_interest = sum(n(v.get("interest_paid")) for v in by_type.get(DocType.HOME_LOAN_CERT, []))
+    home_principal = sum(n(v.get("principal_repaid")) for v in by_type.get(DocType.HOME_LOAN_CERT, []))
+    let_out_rent = sum(n(v.get("let_out_annual_rent")) for v in by_type.get(DocType.HOME_LOAN_CERT, []))
+    municipal = sum(n(v.get("municipal_taxes")) for v in by_type.get(DocType.HOME_LOAN_CERT, []))
+    self_occ = any(str(v.get("is_self_occupied") or "").strip().lower().startswith(("y", "t"))
+                   for v in by_type.get(DocType.HOME_LOAN_CERT, []))
+    ais_rent = n(ais.get("rent_received"))
+    if let_out_rent == 0 and ais_rent > 0:
+        let_out_rent = ais_rent
+    raw["let_out_annual_rent"] = let_out_rent
+    raw["let_out_municipal_taxes"] = municipal
+    raw["home_loan_interest"] = home_interest
+    raw["home_loan_self_occupied"] = self_occ and let_out_rent == 0
+
+    # --- HRA (recompute from rent receipt only if employer granted no Sec 10) ---
+    if raw["exempt_allowances"] <= 0:
+        rr = by_type.get(DocType.RENT_RECEIPT, [])
+        raw["hra_received"] = max((n(v.get("hra_received")) for v in rr), default=0.0)
+        raw["hra_rent_paid"] = max((n(v.get("rent_paid")) for v in rr), default=0.0)
+        raw["hra_basic_da"] = max((n(v.get("basic_da")) for v in rr), default=0.0)
+        raw["hra_is_metro"] = any(str(v.get("is_metro") or "").strip().lower().startswith(("y", "t")) for v in rr)
+
+    # --- Chapter VI-A (larger of Form 16 / proof; principal folded into 80C) ---
+    raw["amount_80c"] = max(f16_80c, proof_max("amount_80c"), home_principal)
+    raw["amount_80ccd1b"] = max(f16_80ccd1b, proof_max("amount_80ccd1b"))
+    raw["amount_80ccd2"] = f16_80ccd2
+    raw["amount_80d_self"] = max(f16_80d, proof_max("amount_80d_self"))
+    raw["amount_80d_parents"] = proof_max("amount_80d_parents")
+    raw["amount_80e"] = sum(n(v.get("amount_80e")) for v in proofs)
+    raw["amount_80eea"] = proof_max("amount_80eea")
+    raw["amount_80dd"] = proof_max("amount_80dd")
+    raw["amount_80dd_severe"] = any(str(v.get("amount_80dd_severe") or "").lower().startswith(("y", "t")) for v in proofs)
+    raw["amount_80ddb"] = proof_max("amount_80ddb")
+    raw["amount_80u"] = proof_max("amount_80u")
+    raw["amount_80u_severe"] = any(str(v.get("amount_80u_severe") or "").lower().startswith(("y", "t")) for v in proofs)
+    raw["amount_80gg"] = sum(n(v.get("amount_80gg")) for v in proofs)
+    for key in ("donation_100_no_limit", "donation_50_no_limit", "donation_100_limit", "donation_50_limit"):
+        raw[key] = sum(n(v.get(key)) for v in by_type.get(DocType.DONATION_80G, []))
+
+    # --- Other-source income (larger of certificate vs AIS) ---
+    cert = by_type.get(DocType.INTEREST_CERT, [])
+    cert_savings = sum(n(v.get("savings_interest")) for v in cert)
+    cert_fd = sum(n(v.get("fd_interest")) for v in cert)
+    raw["savings_interest"] = max(cert_savings, n(ais.get("savings_interest")))
+    raw["fd_interest"] = max(cert_fd, n(ais.get("fd_interest")))
+    raw["interest_on_bonds"] = n(ais.get("interest_on_bonds"))
+    broker_div = sum(n(v.get("dividend")) for v in by_type.get(DocType.BROKER_PNL, []))
+    raw["dividend"] = max(broker_div, n(ais.get("dividend")))
+    raw["family_pension"] = n(ais.get("family_pension"))
+    raw["interest_on_it_refund"] = n(ais.get("interest_on_it_refund"))
+    raw["professional_fees"] = n(ais.get("professional_fees"))
+
+    # --- Capital gains (sum across brokers) ---
+    for key in ("stcg_111a", "ltcg_112a", "stcg_other", "ltcg_other", "vda_gain"):
+        raw[key] = sum(n(v.get(key)) for v in by_type.get(DocType.BROKER_PNL, []))
+
+    # --- Taxes paid (larger of per-document vs 26AS aggregate) ---
+    tds_individual = (f16_tds
+                      + sum(n(v.get("tds")) for v in by_type.get(DocType.FORM16A, []))
+                      + sum(n(v.get("tds")) for v in cert))
+    tds_26as = n(f26.get("total_tds_salary")) + n(f26.get("total_tds_other"))
+    raw["tds_total"] = max(tds_individual, tds_26as)
+    raw["tcs_total"] = max(n(f26.get("tcs_total")), n(ais.get("tcs_total")))
+    raw["advance_tax"] = max(n(f26.get("advance_tax")), n(ais.get("advance_tax")))
+    raw["self_assessment_tax"] = max(n(f26.get("self_assessment_tax")), n(ais.get("self_assessment_tax")))
+    raw["tds_on_property_purchase"] = n(f26.get("tds_on_property_purchase"))
 
     return raw
 
@@ -586,7 +811,7 @@ def _write_report(
             f"| Surcharge | {_inr(r['surcharge'])} |",
             f"| Cess (4%) | {_inr(r['cess'])} |",
             f"| **Total Tax Liability** | **{_inr(r['total_tax'])}** |",
-            f"| TDS + Advance Tax Paid | {_inr(r['taxes_paid'])} |",
+            f"| Taxes Paid (TDS/TCS/Advance/SAT) | {_inr(r['taxes_paid'])} |",
             f"| **Tax Payable / (Refund)** | **{_inr(r['payable'])}** |",
             "",
         ]
@@ -662,7 +887,7 @@ async def main() -> None:
     extracted = await _extract_all(doc_files, passwords)
 
     print("\nMerging extracted fields...")
-    raw = _merge_raw(extracted)
+    raw = _consolidate(extracted)
 
     print("Computing GT tax (independent of engine.py)...")
     gt = _compute_gt(raw, age=args.age)

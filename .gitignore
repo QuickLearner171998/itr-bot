@@ -19,3 +19,4 @@ frontend/out/
 frontend/*.tsbuildinfo
 npm-debug.log*
 .DS_Store
+.vercel
