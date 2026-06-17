@@ -61,6 +61,7 @@ export interface ComputeStep {
   label: string;
   amount: number;
   kind: string;
+  detail?: string;
 }
 
 export interface Discrepancy {
@@ -130,12 +131,21 @@ export interface RegimeResult {
   gross_total_income: number;
   total_deductions: number;
   total_income: number;
+  tax_before_rebate: number;
+  marginal_relief: number;
   total_tax_liability: number;
   surcharge: number;
   cess: number;
   rebate_87a: number;
   taxes_paid: number;
   refund_or_payable: number;
+}
+
+export interface RegimeComparison {
+  old: RegimeResult;
+  new: RegimeResult;
+  recommended: string;
+  savings: number;
 }
 
 export interface TaxComputation {

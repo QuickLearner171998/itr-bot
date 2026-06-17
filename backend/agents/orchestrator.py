@@ -12,7 +12,7 @@ import asyncio
 
 from ..app.events import bus
 from ..app.logging_setup import get_logger
-from ..compute.engine import compute_taxes
+from ..compute.engine import compare_regimes, compute_taxes
 from ..compute.recompute import verify
 from ..compute.validators import validate_final_return
 from ..schemas.compute import TaxComputation, TaxInput
@@ -45,7 +45,7 @@ async def run_computation(
     for step in chosen.steps:
         await bus.emit(session_id, EventType.COMPUTE_STEP, step.label,
                        key=step.key, label=step.label, amount=step.amount,
-                       kind=step.kind, regime=chosen.regime)
+                       kind=step.kind, detail=step.detail, regime=chosen.regime)
         await asyncio.sleep(0.12)  # paces the live waterfall animation
 
     await bus.emit(session_id, EventType.AGENT_STEP,
@@ -54,6 +54,8 @@ async def run_computation(
     computation.verified = verified
     computation.verification_note = note
     await bus.emit(session_id, EventType.VERIFICATION, note, verified=verified)
+
+    comparison = compare_regimes(ti).model_dump()
 
     final_issues = validate_final_return(ti, form, profile)
     for issue in final_issues:
@@ -67,11 +69,13 @@ async def run_computation(
                    f"{regime.upper()} regime: tax {chosen.total_tax_liability:,.0f} "
                    f"({verb} {abs(payable):,.0f})",
                    computation=computation.model_dump(),
+                   comparison=comparison,
                    blocking=bool(blocking))
     logger.info("computation done", extra={
         "regime": regime, "verified": verified, "blocking": bool(blocking)})
     return {
         "computation": computation.model_dump(),
+        "comparison": comparison,
         "verified": verified,
         "verification_note": note,
         "final_issues": [i.model_dump() for i in final_issues],

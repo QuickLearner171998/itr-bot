@@ -247,13 +247,14 @@ def consolidate_detailed(
             # AIS reports more salary than the uploaded Form 16(s). Auto-add the
             # gap as income so nothing is under-reported, and attach a clear
             # explanation of why the gap exists and what to re-check.
+            synthetic_idx = len(ti.salaries)
             ti.salaries.append(SalaryComponent(
                 employer_name="[AIS: Additional salary not in Form 16]",
                 gross_salary=surplus,
                 taxable_salary=surplus,
             ))
             discrepancies.append(Discrepancy(
-                field="salary_gross",
+                field=f"salaries.{synthetic_idx}.gross_salary",
                 label="Salary: AIS higher than Form 16",
                 sources=[
                     {"doc": "Form 16 (total)", "value": f16_gross_total},
@@ -269,20 +270,6 @@ def consolidate_detailed(
                     "(2) in AIS, check every entry under 'Salary (Section 192)'; "
                     "(3) confirm the PAN and period match. Edit this figure on the review "
                     "screen if the AIS amount is wrong.")))
-        elif surplus < -1000:
-            # Form 16 reports more than AIS — flag for confirmation too.
-            _pick(discrepancies, "salary_gross", "Gross Salary (Form 16 vs AIS)", [
-                (DocType.FORM16, f16_gross_total),
-                (DocType.AIS, ais_salary)])
-
-    # Cross-source salary TDS check: Form 16 TDS sum vs 26AS salary TDS.
-    # These should match to the rupee; a mismatch means an employer failed to
-    # deposit or the filer is using a wrong Form 16.
-    tds_26as_salary = _num(f26.get("total_tds_salary")) if f26 else 0.0
-    if f16_tds_total > 0 and tds_26as_salary > 0:
-        _pick(discrepancies, "tds_salary", "Salary TDS (Form 16 vs 26AS)", [
-            (DocType.FORM16, f16_tds_total),
-            (DocType.FORM26AS, tds_26as_salary)])
 
     # Other-source income: prefer the larger of certificate vs AIS, flag mismatch.
     cert_savings = cert_fd = 0.0

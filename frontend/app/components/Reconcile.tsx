@@ -197,10 +197,10 @@ export function Reconcile({ sessionId, onNext, onBack, onCoverageUpdate }: Props
               {ti.salaries.map((s, i) => (
                 <div key={i} className="review-employer">
                   <div className="re-name">{s.employer_name || `Employer ${i + 1}`}</div>
-                  <EditRow label="Gross salary" path={`salaries.${i}.gross_salary`} ti={ti} onChange={update} />
+                  <EditRow label="Gross salary" path={`salaries.${i}.gross_salary`} ti={ti} onChange={update} discrepancy={discByField[`salaries.${i}.gross_salary`]} />
                   <EditRow label="Exempt allowances (Sec 10)" path={`salaries.${i}.exempt_allowances`} ti={ti} onChange={update} />
                   <EditRow label="Professional tax" path={`salaries.${i}.professional_tax`} ti={ti} onChange={update} />
-                  <EditRow label="TDS" path={`salaries.${i}.tds`} ti={ti} onChange={update} />
+                  <EditRow label="TDS" path={`salaries.${i}.tds`} ti={ti} onChange={update} discrepancy={discByField[`salaries.${i}.tds`]} />
                 </div>
               ))}
             </div>

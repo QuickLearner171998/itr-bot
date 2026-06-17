@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from ..schemas.compute import (
     ComputeStep,
+    RegimeComparison,
     RegimeResult,
     TaxComputation,
     TaxInput,
@@ -20,6 +21,62 @@ from .constants import fy2025_26 as K
 def _round_to_ten(amount: float) -> float:
     """Round to the nearest multiple of ten (Sec 288A/288B rounding)."""
     return float(round(amount / 10.0) * 10)
+
+
+def _inr(amount: float) -> str:
+    """Format a rupee amount with Indian digit grouping and no decimals.
+
+    Args:
+        amount: Value to format.
+
+    Returns:
+        The integer-rounded amount grouped as e.g. ``14,35,080`` (lakh/crore
+        style), with a leading minus for negatives.
+    """
+    n = int(round(amount))
+    sign = "-" if n < 0 else ""
+    s = str(abs(n))
+    if len(s) <= 3:
+        return sign + s
+    head, tail = s[:-3], s[-3:]
+    groups = []
+    while len(head) > 2:
+        groups.insert(0, head[-2:])
+        head = head[:-2]
+    groups.insert(0, head)
+    return sign + ",".join(groups) + "," + tail
+
+
+def _rate_pct(rate: float) -> str:
+    """Render a fractional rate as a percentage without trailing zeros."""
+    return f"{rate * 100:g}%"
+
+
+def _slab_breakdown(income: float, slabs: list[tuple[float | None, float]]) -> str:
+    """Build a bracket-by-bracket explanation of slab tax for one income.
+
+    Args:
+        income: Taxable (slab) income.
+        slabs: ``(upper_bound, rate)`` list; ``upper_bound`` ``None`` means
+            "and above".
+
+    Returns:
+        A string like ``"5% on 2,50,000-5,00,000 = 12,500 + 20% on ..."``,
+        listing every bracket reached by ``income``.
+    """
+    parts: list[str] = []
+    lower = 0.0
+    for upper, rate in slabs:
+        cap = income if upper is None else min(income, upper)
+        if cap > lower:
+            band = (cap - lower) * rate
+            hi = "above" if upper is None else f"₹{_inr(upper)}"
+            parts.append(f"{_rate_pct(rate)} on ₹{_inr(lower)}-{hi} = ₹{_inr(band)}")
+        if upper is not None:
+            lower = upper
+        if upper is not None and income <= upper:
+            break
+    return "  +  ".join(parts) if parts else "Nil"
 
 
 def _slab_tax(income: float, slabs: list[tuple[float | None, float]]) -> float:
@@ -103,6 +160,18 @@ def _capital_gains_tax(
     tax_ltcg_other = cg.ltcg_other * K.LTCG_OTHER_RATE
     tax_vda = cg.vda_gain * K.VDA_RATE
 
+    lines: list[str] = []
+    if tax_111a:
+        lines.append(f"STCG 111A: {_rate_pct(K.STCG_111A_RATE)} x ₹{_inr(stcg_111a)} = ₹{_inr(tax_111a)}")
+    if tax_112a:
+        lines.append(
+            f"LTCG 112A: {_rate_pct(K.LTCG_112A_RATE)} x ₹{_inr(ltcg_112a_taxable)} "
+            f"(after ₹{_inr(K.LTCG_112A_EXEMPTION)} exemption) = ₹{_inr(tax_112a)}")
+    if tax_ltcg_other:
+        lines.append(f"LTCG (Sec 112): {_rate_pct(K.LTCG_OTHER_RATE)} x ₹{_inr(cg.ltcg_other)} = ₹{_inr(tax_ltcg_other)}")
+    if tax_vda:
+        lines.append(f"VDA / crypto: {_rate_pct(K.VDA_RATE)} x ₹{_inr(cg.vda_gain)} = ₹{_inr(tax_vda)}")
+
     return {
         "tax_111a": tax_111a,
         "tax_112a": tax_112a,
@@ -110,6 +179,7 @@ def _capital_gains_tax(
         "tax_vda": tax_vda,
         "tax_111a_112a": tax_111a + tax_112a,
         "total": tax_111a + tax_112a + tax_ltcg_other + tax_vda,
+        "detail": "  +  ".join(lines),
     }
 
 
@@ -366,6 +436,7 @@ def compute_regime(ti: TaxInput, regime: str) -> RegimeResult:
     exempt = sum(s.exempt_allowances for s in ti.salaries)
     professional_tax = sum(s.professional_tax for s in ti.salaries)
     std_ded = K.NEW_STANDARD_DEDUCTION if regime == "new" else K.OLD_STANDARD_DEDUCTION
+    std_ded_detail = f"Flat salary standard deduction u/s 16(ia) ({regime} regime) = ₹{_inr(std_ded)}"
 
     hra_exemption = 0.0
     if regime == "new":
@@ -393,10 +464,17 @@ def compute_regime(ti: TaxInput, regime: str) -> RegimeResult:
             steps.append(ComputeStep(key="hra_exemption", label="  Less: HRA Exemption u/s 10(13A)", amount=hra_exemption, kind="subtract"))
         else:
             steps.append(ComputeStep(key="exempt", label="  Less: Exempt Allowances (Sec 10)", amount=exempt, kind="subtract"))
-    steps.append(ComputeStep(key="std_ded", label="  Less: Standard Deduction", amount=std_ded, kind="subtract"))
+    steps.append(ComputeStep(key="std_ded", label="  Less: Standard Deduction", amount=std_ded, kind="subtract", detail=std_ded_detail))
     if professional_tax:
         steps.append(ComputeStep(key="ptax", label="  Less: Professional Tax u/s 16(iii)", amount=professional_tax, kind="subtract"))
-    steps.append(ComputeStep(key="net_salary", label="Income from Salary", amount=net_salary, kind="total"))
+    salary_terms = [f"₹{_inr(gross_salary)} gross"]
+    if exempt:
+        salary_terms.append(f"₹{_inr(exempt)} exempt")
+    salary_terms.append(f"₹{_inr(std_ded)} std deduction")
+    if professional_tax:
+        salary_terms.append(f"₹{_inr(professional_tax)} prof. tax")
+    net_salary_detail = " - ".join(salary_terms) + f" = ₹{_inr(net_salary)}"
+    steps.append(ComputeStep(key="net_salary", label="Income from Salary", amount=net_salary, kind="total", detail=net_salary_detail))
 
     hp_income = _house_property(ti, regime)
     if hp_income:
@@ -427,7 +505,9 @@ def compute_regime(ti: TaxInput, regime: str) -> RegimeResult:
             steps.append(ComputeStep(key="other_income", label="  Other Income", amount=ti.other_income, kind="add"))
         steps.append(ComputeStep(key="other_sources", label="Income from Other Sources", amount=other_sources, kind="total"))
     if fp_deduction:
-        steps.append(ComputeStep(key="fp_ded", label="  Less: Family Pension Deduction (Sec 57)", amount=fp_deduction, kind="subtract"))
+        steps.append(ComputeStep(
+            key="fp_ded", label="  Less: Family Pension Deduction (Sec 57)", amount=fp_deduction, kind="subtract",
+            detail=f"Lower of 1/3 x ₹{_inr(fp)} and ₹{_inr(fp_cap)} cap = ₹{_inr(fp_deduction)}"))
 
     # Professional / freelance income (Sec 194J) — taxed at slab rate.
     # Requires ITR-2; shown as a separate income head.
@@ -459,11 +539,18 @@ def compute_regime(ti: TaxInput, regime: str) -> RegimeResult:
         steps.append(ComputeStep(key="chvia", label="Total Deductions (Chapter VI-A)", amount=deductions, kind="subtract"))
 
     normal_income = _round_to_ten(max(0.0, gti_normal - deductions))
-    steps.append(ComputeStep(key="total_income", label="Taxable Income (slab)", amount=normal_income, kind="total"))
+    steps.append(ComputeStep(
+        key="total_income", label="Taxable Income (slab)", amount=normal_income, kind="total",
+        detail=f"GTI ₹{_inr(gti_normal)} - deductions ₹{_inr(deductions)}, rounded to ₹{_inr(normal_income)}"))
 
     slabs = K.NEW_REGIME_SLABS if regime == "new" else _old_regime_slabs(ti.age)
-    slab_tax = _agri_adjusted_slab_tax(
-        _slab_tax(normal_income, slabs), normal_income, ti, slabs, regime)
+    plain_slab_tax = _slab_tax(normal_income, slabs)
+    slab_tax = _agri_adjusted_slab_tax(plain_slab_tax, normal_income, ti, slabs, regime)
+    if slab_tax == plain_slab_tax:
+        slab_tax_detail = _slab_breakdown(normal_income, slabs)
+    else:
+        slab_tax_detail = (f"Agricultural income ₹{_inr(ti.agricultural_income)} integrated for rate purposes; "
+                           f"net slab tax = ₹{_inr(slab_tax)}")
 
     cg = _capital_gains_tax(ti, normal_income, regime)
     special_income = (ti.capital_gains.stcg_111a + ti.capital_gains.ltcg_112a
@@ -481,9 +568,9 @@ def compute_regime(ti: TaxInput, regime: str) -> RegimeResult:
         if ti.capital_gains.vda_gain:
             steps.append(ComputeStep(key="vda", label="  VDA / Crypto Gains (flat 30%)", amount=ti.capital_gains.vda_gain, kind="add"))
 
-    steps.append(ComputeStep(key="slab_tax", label="Tax on Slab Income", amount=slab_tax, kind="tax"))
+    steps.append(ComputeStep(key="slab_tax", label="Tax on Slab Income", amount=slab_tax, kind="tax", detail=slab_tax_detail))
     if cg["total"]:
-        steps.append(ComputeStep(key="cg_tax", label="Tax on Capital Gains (special rates)", amount=cg["total"], kind="tax"))
+        steps.append(ComputeStep(key="cg_tax", label="Tax on Capital Gains (special rates)", amount=cg["total"], kind="tax", detail=cg["detail"]))
 
     # Rebate u/s 87A (against slab tax only) + new-regime marginal relief.
     rebate = 0.0
@@ -499,24 +586,37 @@ def compute_regime(ti: TaxInput, regime: str) -> RegimeResult:
             if 0 < excess and slab_tax > excess:
                 marginal_relief_rebate = slab_tax - excess
     if rebate:
-        steps.append(ComputeStep(key="rebate", label="Less: Rebate u/s 87A", amount=rebate, kind="subtract"))
+        rebate_limit = K.OLD_REBATE_INCOME_LIMIT if regime == "old" else K.NEW_REBATE_INCOME_LIMIT
+        rebate_max = K.OLD_REBATE_MAX if regime == "old" else K.NEW_REBATE_MAX
+        steps.append(ComputeStep(
+            key="rebate", label="Less: Rebate u/s 87A", amount=rebate, kind="subtract",
+            detail=f"Total income ₹{_inr(total_income)} within ₹{_inr(rebate_limit)} limit; "
+                   f"rebate = min(tax ₹{_inr(slab_tax)}, ₹{_inr(rebate_max)} cap) = ₹{_inr(rebate)}"))
     if marginal_relief_rebate:
-        steps.append(ComputeStep(key="mr_rebate", label="Less: Marginal Relief (87A)", amount=marginal_relief_rebate, kind="subtract"))
+        steps.append(ComputeStep(
+            key="mr_rebate", label="Less: Marginal Relief (87A)", amount=marginal_relief_rebate, kind="subtract",
+            detail=f"Tax ₹{_inr(slab_tax)} exceeds income over ₹{_inr(K.NEW_REBATE_INCOME_LIMIT)} threshold; "
+                   f"relief = ₹{_inr(marginal_relief_rebate)}"))
 
     slab_tax_after = max(0.0, slab_tax - rebate - marginal_relief_rebate)
     tax_after_rebate = slab_tax_after + cg["total"]
 
     # Surcharge with 15% cap on 111A/112A and marginal relief at band threshold.
-    surcharge, marginal_relief_sc = _surcharge_with_relief(
+    surcharge, marginal_relief_sc, surcharge_detail = _surcharge_with_relief(
         slab_tax_after, cg, total_income, normal_income, special_income, regime, ti.age, slabs
     )
     if surcharge:
-        steps.append(ComputeStep(key="surcharge", label="Add: Surcharge", amount=surcharge, kind="add"))
+        steps.append(ComputeStep(key="surcharge", label="Add: Surcharge", amount=surcharge, kind="add", detail=surcharge_detail))
     if marginal_relief_sc:
-        steps.append(ComputeStep(key="mr_sc", label="Less: Marginal Relief (Surcharge)", amount=marginal_relief_sc, kind="subtract"))
+        steps.append(ComputeStep(
+            key="mr_sc", label="Less: Marginal Relief (Surcharge)", amount=marginal_relief_sc, kind="subtract",
+            detail=f"Caps the surcharge jump at the band threshold; relief = ₹{_inr(marginal_relief_sc)}"))
 
-    cess = (tax_after_rebate + surcharge) * K.HEALTH_EDUCATION_CESS
-    steps.append(ComputeStep(key="cess", label="Add: Health & Education Cess (4%)", amount=cess, kind="add"))
+    cess_base = tax_after_rebate + surcharge
+    cess = cess_base * K.HEALTH_EDUCATION_CESS
+    steps.append(ComputeStep(
+        key="cess", label="Add: Health & Education Cess (4%)", amount=cess, kind="add",
+        detail=f"{_rate_pct(K.HEALTH_EDUCATION_CESS)} x ₹{_inr(cess_base)} (tax + surcharge) = ₹{_inr(cess)}"))
 
     gross_tax = tax_after_rebate + surcharge + cess
     relief = ti.relief_89 + ti.relief_90_91
@@ -525,15 +625,38 @@ def compute_regime(ti: TaxInput, regime: str) -> RegimeResult:
         steps.append(ComputeStep(key="relief", label="Less: Relief (Sec 89 / 90 / 91)", amount=relief, kind="subtract"))
 
     total_tax = _round_to_ten(gross_tax - relief)
-    steps.append(ComputeStep(key="total_tax", label="Total Tax Liability", amount=total_tax, kind="total"))
+    total_tax_terms = [f"tax ₹{_inr(tax_after_rebate)}"]
+    if surcharge:
+        total_tax_terms.append(f"surcharge ₹{_inr(surcharge)}")
+    total_tax_terms.append(f"cess ₹{_inr(cess)}")
+    if relief:
+        total_tax_terms.append(f"less relief ₹{_inr(relief)}")
+    steps.append(ComputeStep(
+        key="total_tax", label="Total Tax Liability", amount=total_tax, kind="total",
+        detail=" + ".join(total_tax_terms) + f", rounded = ₹{_inr(total_tax)}"))
 
     taxes_paid = (ti.tds_total + ti.tcs_total + ti.advance_tax
                   + ti.self_assessment_tax + ti.tds_on_property_purchase)
-    steps.append(ComputeStep(key="taxes_paid", label="Less: Taxes Already Paid (TDS/TCS/Advance)", amount=taxes_paid, kind="subtract"))
+    paid_terms = []
+    if ti.tds_total:
+        paid_terms.append(f"TDS ₹{_inr(ti.tds_total)}")
+    if ti.tcs_total:
+        paid_terms.append(f"TCS ₹{_inr(ti.tcs_total)}")
+    if ti.advance_tax:
+        paid_terms.append(f"advance tax ₹{_inr(ti.advance_tax)}")
+    if ti.self_assessment_tax:
+        paid_terms.append(f"self-assessment ₹{_inr(ti.self_assessment_tax)}")
+    if ti.tds_on_property_purchase:
+        paid_terms.append(f"194IA property TDS ₹{_inr(ti.tds_on_property_purchase)}")
+    steps.append(ComputeStep(
+        key="taxes_paid", label="Less: Taxes Already Paid (TDS/TCS/Advance)", amount=taxes_paid, kind="subtract",
+        detail=(" + ".join(paid_terms) + f" = ₹{_inr(taxes_paid)}") if paid_terms else ""))
 
     refund_or_payable = _round_to_ten(total_tax - taxes_paid)
     label = "Tax Payable" if refund_or_payable >= 0 else "Refund Due"
-    steps.append(ComputeStep(key="net", label=label, amount=abs(refund_or_payable), kind="total"))
+    steps.append(ComputeStep(
+        key="net", label=label, amount=abs(refund_or_payable), kind="total",
+        detail=f"Total tax ₹{_inr(total_tax)} - taxes paid ₹{_inr(taxes_paid)} = ₹{_inr(total_tax - taxes_paid)}"))
 
     return RegimeResult(
         regime=regime,
@@ -561,23 +684,29 @@ def _surcharge_with_relief(
     regime: str,
     age: int,
     slabs: list[tuple[float | None, float]],
-) -> tuple[float, float]:
+) -> tuple[float, float, str]:
     """Compute surcharge with the 15% capital-gains cap and marginal relief.
 
     Marginal relief ensures the increase in (tax + surcharge) over the band
     threshold does not exceed the income over that threshold.
 
     Returns:
-        ``(surcharge, marginal_relief)``.
+        ``(surcharge, marginal_relief, detail)`` where ``detail`` is a
+        human-readable formula for the surcharge.
     """
     rate = _surcharge_rate(total_income, regime)
     if rate == 0.0:
-        return 0.0, 0.0
+        return 0.0, 0.0, ""
 
     cg_rate = min(rate, K.CG_SURCHARGE_CAP)
     capped_tax = cg["tax_111a_112a"]
     uncapped_special = cg["tax_ltcg_other"] + cg["tax_vda"]
     surcharge = slab_tax_after * rate + uncapped_special * rate + capped_tax * cg_rate
+
+    base_at_rate = slab_tax_after + uncapped_special
+    detail = f"{_rate_pct(rate)} surcharge on ₹{_inr(base_at_rate)} tax (total income ₹{_inr(total_income)})"
+    if capped_tax:
+        detail += f"  +  {_rate_pct(cg_rate)} on ₹{_inr(capped_tax)} capital-gains tax (capped)"
 
     threshold = _surcharge_threshold(total_income)
     prev_rate = _surcharge_rate(threshold, regime) if threshold > 0 else 0.0
@@ -592,7 +721,8 @@ def _surcharge_with_relief(
     total_at_t = tax_at_t + sc_at_t
     allowed = total_income - threshold
     marginal_relief = max(0.0, (total_now - total_at_t) - allowed)
-    return surcharge - marginal_relief if marginal_relief else surcharge, marginal_relief
+    final_surcharge = surcharge - marginal_relief if marginal_relief else surcharge
+    return final_surcharge, marginal_relief, detail
 
 
 def compute_taxes(ti: TaxInput, regime: str) -> TaxComputation:
@@ -606,3 +736,20 @@ def compute_taxes(ti: TaxInput, regime: str) -> TaxComputation:
         A ``TaxComputation`` holding the traced result for that regime.
     """
     return TaxComputation(result=compute_regime(ti, regime), regime=regime)
+
+
+def compare_regimes(ti: TaxInput) -> RegimeComparison:
+    """Compute both regimes for the same input and flag the cheaper one.
+
+    Args:
+        ti: Consolidated tax input.
+
+    Returns:
+        A ``RegimeComparison`` with both fully-traced results, the recommended
+        (lower total-tax) regime, and the absolute tax saving.
+    """
+    old = compute_regime(ti, "old")
+    new = compute_regime(ti, "new")
+    recommended = "old" if old.total_tax_liability <= new.total_tax_liability else "new"
+    savings = abs(old.total_tax_liability - new.total_tax_liability)
+    return RegimeComparison(old=old, new=new, recommended=recommended, savings=savings)

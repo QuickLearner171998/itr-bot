@@ -16,6 +16,7 @@ import type {
   ComputeStep,
   DocumentExtraction,
   ExtractedField,
+  RegimeComparison,
   StreamEvent,
   TaxComputation,
 } from "./types";
@@ -44,12 +45,14 @@ interface SessionState {
   reconFlags: { severity: string; message: string }[];
   computeSteps: ComputeStep[];
   computation: TaxComputation | null;
+  comparison: RegimeComparison | null;
   verification: { verified: boolean; note: string } | null;
   busy: boolean;
   start: () => Promise<string>;
   restoreSession: (sid: string) => void;
   setBusy: (b: boolean) => void;
   setComputation: (c: TaxComputation) => void;
+  setComparison: (c: RegimeComparison) => void;
   resetCompute: () => void;
 }
 
@@ -63,6 +66,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [reconFlags, setReconFlags] = useState<{ severity: string; message: string }[]>([]);
   const [computeSteps, setComputeSteps] = useState<ComputeStep[]>([]);
   const [computation, setComputation] = useState<TaxComputation | null>(null);
+  const [comparison, setComparison] = useState<RegimeComparison | null>(null);
   const [verification, setVerification] = useState<{ verified: boolean; note: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const pushActivity = (kind: Activity["kind"], text: string) => {
@@ -157,7 +161,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         pushActivity("info", ev.message || "");
         break;
       case "compute.step":
-        setComputeSteps((s) => [...s, { key: d.key, label: d.label, amount: d.amount, kind: d.kind }]);
+        setComputeSteps((s) => [...s, { key: d.key, label: d.label, amount: d.amount, kind: d.kind, detail: d.detail || "" }]);
         break;
       case "verification":
         pushActivity("verify", ev.message || "");
@@ -166,6 +170,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       case "compute.done":
         pushActivity("verify", ev.message || "");
         if (d.computation) setComputation(d.computation);
+        if (d.comparison) setComparison(d.comparison);
         break;
       case "error":
         pushActivity("err", ev.message || "Error");
@@ -199,6 +204,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const resetCompute = () => {
     setComputeSteps([]);
     setComputation(null);
+    setComparison(null);
     setVerification(null);
     setReconFlags([]);
   };
@@ -206,9 +212,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<SessionState>(
     () => ({
       sessionId, activity, liveDocs, extractions, reconFlags, computeSteps,
-      computation, verification, busy, start, restoreSession, setBusy, setComputation, resetCompute,
+      computation, comparison, verification, busy, start, restoreSession, setBusy,
+      setComputation, setComparison, resetCompute,
     }),
-    [sessionId, activity, liveDocs, extractions, reconFlags, computeSteps, computation, verification, busy] // eslint-disable-line react-hooks/exhaustive-deps
+    [sessionId, activity, liveDocs, extractions, reconFlags, computeSteps, computation, comparison, verification, busy] // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

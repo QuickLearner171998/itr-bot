@@ -138,6 +138,7 @@ class ComputeStep(BaseModel):
     label: str
     amount: float
     kind: str = "add"  # add | subtract | total | tax | info
+    detail: str = ""  # human-readable formula / breakdown for transparency
 
 
 class RegimeResult(BaseModel):
@@ -166,3 +167,12 @@ class TaxComputation(BaseModel):
     regime: str  # "old" | "new" (the regime the user is filing under)
     verified: bool = False
     verification_note: str = ""
+
+
+class RegimeComparison(BaseModel):
+    """Side-by-side old vs new regime computation for the same input."""
+
+    old: RegimeResult
+    new: RegimeResult
+    recommended: str  # "old" | "new" — the lower-tax regime
+    savings: float = 0.0  # absolute tax-liability difference between regimes
