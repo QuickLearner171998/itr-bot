@@ -1,0 +1,30 @@
+name: Deploy on push to main
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy-frontend:
+    name: Deploy frontend to Vercel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      - name: Deploy frontend
+        run: vercel deploy --prod --yes --cwd frontend
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: team_2RUirQElY7CN2LibxGHhqAkC
+          VERCEL_PROJECT_ID: prj_Uw8xgfHtrTlI3j8gHKYAfg2ujZnC
+
+  deploy-backend:
+    name: Deploy backend to Render
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy hook
+        run: |
+          curl -fsSL -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
